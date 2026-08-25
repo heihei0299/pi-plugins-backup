@@ -47,11 +47,12 @@ import { loadP, loadGuide } from "./prompts";
 import { saveUndo } from "./replace-undo";
 import { loadHashStore, findSnapshotPaths, type HashStore } from "./hash-store";
 import { getServed, recordServedSafe, recordServedDiffSafe } from "./served";
+import { noopPayloadKey, markBoundaryNoop, consumeBoundaryBypass, clearBoundaryBypass } from "./boundary-bypass";
 
 const replacementLinesSchema = Type.Array(
   Type.String({
     description:
-      "One replacement line. Each element is exactly one line; do not embed \\n inside an element — use separate elements.",
+      "One replacement line. Each element is exactly one line; do not embed \\n inside an element: use separate elements.",
   }),
   {
     description:
@@ -60,16 +61,16 @@ const replacementLinesSchema = Type.Array(
 );
 
 const removeFromSchema = Type.String({
-  description: "Bare 3-char HASH only (e.g. \"aB3\") — copy just the hash from the leftmost column of a read row like `aB3│content`; never the line content. Marks the FIRST line to remove (inclusive)",
+  description: "Bare 3-char HASH only (e.g. \"aB3\"): copy just the hash from the leftmost column of a read row like `aB3│content`; never the line content. Marks the FIRST line to remove (inclusive)",
 });
 
 const removeToSchema = Type.String({
-  description: "Bare 3-char HASH only (e.g. \"aB3\") — copy just the hash from the leftmost column of a read row like `aB3│content`; never the line content. Marks the LAST line to remove (inclusive)",
+  description: "Bare 3-char HASH only (e.g. \"aB3\"): copy just the hash from the leftmost column of a read row like `aB3│content`; never the line content. Marks the LAST line to remove (inclusive)",
 });
 
 export const editToolSchema = Type.Object(
   {
-    path: Type.Optional(Type.String({ description: "Path to edit. Required — always provide it explicitly; it is only auto-resolved from the anchors as a fallback when omitted by mistake." })),
+    path: Type.Optional(Type.String({ description: "Path to edit. Required: always provide it explicitly; it is only auto-resolved from the anchors as a fallback when omitted by mistake." })),
     remove_from: removeFromSchema,
     remove_to: removeToSchema,
     replacement_lines: replacementLinesSchema,
@@ -107,6 +108,8 @@ interface PipelineResult {
   resultHashes: string[];
   totalAddedLines: number;
   totalRemovedLines: number;
+  hadBoundaryDedup: boolean;
+  boundaryRemovedLines: number;
 }
 
 const PREVIEW_DEBOUNCE_MS = 150;
@@ -133,7 +136,7 @@ export function assertReq(
     request.replacement_lines.some((line) => typeof line !== "string")
   ) {
     throw new Error(
-      '[E_BAD_SHAPE] Edit request requires "remove_from", "remove_to", and "replacement_lines" at the top level. replacement_lines must be an array of strings, one element per line (use [] to delete).',
+      '[E_BAD_SHAPE] Edit request requires "remove_from", "remove_to", and "replacement_lines" (array of strings, one per line; use [] to delete).',
     );
   }
 }
@@ -163,12 +166,12 @@ async function resolveMissingPath(
   if (matches.length === 1) {
     return {
       path: matches[0]!,
-      warning: `[E_BAD_SHAPE] Autocorrected: missing "path" resolved to ${matches[0]} — the only file whose stored hashes contain both anchors.`,
+      warning: `[E_BAD_SHAPE] Autocorrected: missing "path" resolved to ${matches[0]}.`,
     };
   }
   if (matches.length > 1) {
     throw new Error(
-      `[E_BAD_SHAPE] Edit request requires a non-empty "path" string; the anchors match multiple known files: ${matches.join(", ")}. Include the intended path.`,
+      `[E_BAD_SHAPE] Edit request requires a non-empty "path" string; the anchors match multiple known files: ${matches.join(", ")}.`,
     );
   }
   return undefined;
@@ -179,6 +182,7 @@ export interface ExecPipelineOptions {
   signal?: AbortSignal;
   store?: HashStore;
   noPersist?: boolean;
+  skipBoundaryDedup?: boolean;
 }
 
 function collectRemovedHashes(
@@ -252,6 +256,7 @@ export async function execPipeline(
       originalHashes,
       path,
       served,
+      options?.skipBoundaryDedup,
     );
   } catch (error) {
     if (options?.noPersist !== true) {
@@ -298,6 +303,8 @@ export async function execPipeline(
     originalHashes,
     totalAddedLines,
     totalRemovedLines,
+    hadBoundaryDedup: (anchorResult.autoFixes?.length ?? 0) > 0,
+    boundaryRemovedLines: anchorResult.autoFixes?.length ?? 0,
   };
 }
 
@@ -477,6 +484,8 @@ export function buildToolDef(): ToolDef {
       const path = normalizedParams.path;
       const absolutePath = toCwd(path, ctx.cwd);
       const mutationTargetPath = await resolveTarget(absolutePath);
+      const noopPayload = noopPayloadKey(mutationTargetPath, normalizedParams.remove_from, normalizedParams.remove_to, normalizedParams.replacement_lines);
+      const boundaryBypass = consumeBoundaryBypass(mutationTargetPath, noopPayload);
       return withFileMutationQueue(mutationTargetPath, async () => {
         abortIf(signal);
 
@@ -492,21 +501,29 @@ export function buildToolDef(): ToolDef {
           firstChangedLine,
           lastChangedLine,
           resultHashes,
+          hadBoundaryDedup,
+          boundaryRemovedLines,
           totalAddedLines,
           totalRemovedLines,
         } = await execPipeline(
           normalizedParams,
           ctx.cwd,
-          { accessMode: constants.R_OK | constants.W_OK, signal },
+          { accessMode: constants.R_OK | constants.W_OK, signal, skipBoundaryDedup: boundaryBypass },
         );
 
         if (resolution) {
           warnings.unshift(resolution.warning);
         }
+        if (boundaryBypass && originalNormalized !== result) {
+          warnings.push("[E_BOUNDARY_BYPASS] Boundary dedup was off for this call and is back on.");
+        }
 
         const editsAttempted = 1;
         if (originalNormalized === result) {
           const noopSnapshotId = await safeSnapId(absolutePath, "noop edit");
+          if (hadBoundaryDedup) {
+            markBoundaryNoop(mutationTargetPath, noopPayload);
+          }
           return buildNoop({
             path,
             noopEdit,
@@ -518,6 +535,7 @@ export function buildToolDef(): ToolDef {
               removedLines: 0,
             },
             warnings,
+            boundaryRemovedLines,
           });
         }
 
@@ -537,7 +555,7 @@ export function buildToolDef(): ToolDef {
         });
         if (!undo.persisted) {
           throw new Error(
-            `[E_UNDO_UNAVAILABLE] Cannot persist undo history to the hash store; the edit was NOT applied and ${path} is unchanged. Retry the replace, or use write if the store cannot be recovered.`
+            `[E_UNDO_UNAVAILABLE] Could not persist undo history; the edit was not applied and ${path} is unchanged.`
           );
         }
         try {
@@ -550,6 +568,7 @@ export function buildToolDef(): ToolDef {
           await undo.restore();
           throw error;
         }
+        clearBoundaryBypass(mutationTargetPath);
         const updatedSnapshotId = await safeSnapId(absolutePath, "post-edit");
 
         const editMeta: RMeta = {

@@ -14,6 +14,7 @@ import {
 } from "./src/config";
 import { loadHashStore, pruneMissing } from "./src/hash-store";
 import { recordServedSafe, clearServed } from "./src/served";
+import { clearBoundaryBypass } from "./src/boundary-bypass";
 import { readNormFile } from "./src/file-reader";
 import { loadFileKindAndText } from "./src/file-kind";
 import { toCwd } from "./src/paths";
@@ -47,11 +48,11 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("toggle-auto-read", {
-    description: "Toggle automatic hashline anchors after write and post-edit diffs after replace and undo_last_replace operations",
+    description: "Toggle auto-read anchors after write and post-edit diffs after replace and undo_last_replace",
     handler: async (_args, ctx) => {
       autoRead = await toggleAutoRead();
       const state = autoRead ? "enabled" : "disabled";
-      ctx.ui.notify(`Auto-read anchors (write) and post-edit diffs (replace/undo): ${state}`, "info");
+      ctx.ui.notify(`Auto-read anchors after write and post-edit diffs after replace/undo: ${state}`, "info");
     },
   });
 
@@ -64,6 +65,7 @@ export default function (pi: ExtensionAPI): void {
         try {
           const target = await resolveTarget(toCwd(writtenPath, ctx.cwd));
           await clearUndo(target);
+          clearBoundaryBypass(target);
           const store = await loadHashStore();
           clearServed(store, target);
         } catch (error) {

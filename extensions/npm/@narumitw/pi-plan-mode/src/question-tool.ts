@@ -1,6 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	QuestionnaireAnswer,
+	QuestionnaireQuestion,
+	RunQuestionnaireResult,
+} from "@narumitw/pi-tui-kit";
 
 export const PLAN_MODE_QUESTION_TOOL_NAME = "plan_mode_question";
+export const MAX_PLAN_MODE_RESPONSE_LENGTH = 4_000;
 
 export type PlanModeQuestionOption = {
 	label: string;
@@ -14,13 +20,14 @@ export type PlanModeQuestion = {
 	options: PlanModeQuestionOption[];
 };
 
-type PlanModeQuestionAnswer = {
+export type PlanModeQuestionAnswer = {
 	id: string;
 	header: string;
 	question: string;
 	answer: string;
 	wasCustom: boolean;
 	optionIndex?: number;
+	note?: string;
 };
 
 type PlanModeQuestionReason =
@@ -187,44 +194,92 @@ export async function askPlanModeQuestions(
 	ctx: ExtensionContext,
 	shouldContinue: () => boolean = () => true,
 ): Promise<PlanModeQuestionAnswer[] | undefined> {
-	const answers: PlanModeQuestionAnswer[] = [];
-	for (const question of questions) {
-		const choices = question.options.map(formatPlanModeQuestionChoice);
-		const otherChoice = `${question.options.length + 1}. Other (free-form)`;
-		const choice = await ctx.ui.select(`${question.header}: ${question.question}`, [
-			...choices,
-			otherChoice,
-		]);
-		if (!shouldContinue() || !choice) return undefined;
-		if (choice === otherChoice) {
-			const customAnswer = (await ctx.ui.editor(question.question, ""))?.trim();
-			if (!shouldContinue() || !customAnswer) return undefined;
-			answers.push({
-				id: question.id,
-				header: question.header,
-				question: question.question,
-				answer: customAnswer,
-				wasCustom: true,
-			});
-			continue;
-		}
-		const optionIndex = choices.indexOf(choice);
-		const option = question.options[optionIndex];
-		if (!option) return undefined;
-		answers.push({
-			id: question.id,
-			header: question.header,
-			question: question.question,
-			answer: option.label,
-			wasCustom: false,
-			optionIndex: optionIndex + 1,
-		});
-	}
-	return answers;
+	const { runQuestionnaire, sanitizeTerminalText } = await import("@narumitw/pi-tui-kit");
+	if (!shouldContinue()) return undefined;
+	const runnerQuestions: QuestionnaireQuestion<string>[] = questions.map((question, index) => ({
+		id: String(index),
+		header: displayText(question.header, `Question ${index + 1}`, sanitizeTerminalText),
+		prompt: displayText(question.question, `Question ${index + 1}`, sanitizeTerminalText),
+		options: question.options.map((option, optionIndex) => ({
+			...option,
+			label: displayText(option.label, `Option ${optionIndex + 1}`, sanitizeTerminalText),
+		})),
+	}));
+	const result = await runQuestionnaire(ctx, {
+		questions: runnerQuestions,
+		allowNotes: true,
+		maxTextLength: MAX_PLAN_MODE_RESPONSE_LENGTH,
+		signal: ctx.signal,
+		isCurrent: shouldContinue,
+	});
+	if (!shouldContinue()) return undefined;
+	return mapQuestionnaireResult(questions, result);
 }
 
-function formatPlanModeQuestionChoice(option: PlanModeQuestionOption, index: number) {
-	return `${index + 1}. ${option.label}${option.description ? ` — ${option.description}` : ""}`;
+function mapQuestionnaireResult(
+	questions: PlanModeQuestion[],
+	result: RunQuestionnaireResult<string>,
+): PlanModeQuestionAnswer[] | undefined {
+	if (result.kind !== "submitted") return undefined;
+	if (result.answers.length !== questions.length) {
+		throw new Error("Questionnaire returned an incomplete answer set");
+	}
+
+	const answers = new Map<number, QuestionnaireAnswer<string>>();
+	for (const answer of result.answers) {
+		const index = Number(answer.questionId);
+		if (!Number.isSafeInteger(index) || String(index) !== answer.questionId || !questions[index]) {
+			throw new Error("Questionnaire returned an answer for an unknown question");
+		}
+		if (answers.has(index)) throw new Error("Questionnaire returned duplicate answers");
+		if (answer.wasCustom) {
+			if (answer.optionIndex !== undefined) {
+				throw new Error("Questionnaire returned a custom answer with an option index");
+			}
+			if (!answer.answer.trim()) return undefined;
+		} else if (
+			answer.optionIndex === undefined ||
+			!questions[index]?.options[answer.optionIndex - 1]
+		) {
+			throw new Error("Questionnaire returned an invalid selected option");
+		}
+		answers.set(index, answer);
+	}
+
+	return questions.map((question, index) => {
+		const answer = answers.get(index);
+		if (!answer) throw new Error("Questionnaire returned an incomplete answer set");
+		const answerText = answer.wasCustom
+			? answer.answer
+			: (question.options[(answer.optionIndex ?? 0) - 1]?.label ?? answer.answer);
+		return answerFor(question, answerText, {
+			wasCustom: answer.wasCustom,
+			optionIndex: answer.optionIndex,
+			note: answer.note,
+		});
+	});
+}
+
+function displayText(value: string, fallback: string, sanitize: (value: string) => string): string {
+	const sanitized = sanitize(value);
+	return sanitized.trim() ? sanitized : fallback;
+}
+
+function answerFor(
+	question: PlanModeQuestion,
+	answer: string,
+	options: { wasCustom: boolean; optionIndex?: number; note?: string },
+): PlanModeQuestionAnswer {
+	const result: PlanModeQuestionAnswer = {
+		id: question.id,
+		header: question.header,
+		question: question.question,
+		answer,
+		wasCustom: options.wasCustom,
+	};
+	if (options.optionIndex !== undefined) result.optionIndex = options.optionIndex;
+	if (options.note !== undefined) result.note = options.note;
+	return result;
 }
 
 export function planModeQuestionAnswered(

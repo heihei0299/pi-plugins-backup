@@ -125,6 +125,7 @@ export async function loadFileKindAndText(
 
     const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
     let hadUtf8DecodeErrors = false;
+    let containsNul = false;
     let newlineCount = 0;
     const parts: string[] = [];
 
@@ -133,13 +134,16 @@ export async function loadFileKindAndText(
       if (!hadUtf8DecodeErrors && decoded.includes("\uFFFD")) {
         hadUtf8DecodeErrors = true;
       }
+      if (!containsNul && decoded.includes("\0")) {
+        containsNul = true;
+      }
       if (options?.maxLines !== undefined) {
         for (let i = 0; i < decoded.length; i++) {
           if (decoded.charCodeAt(i) === 10) newlineCount++;
         }
         if (newlineCount > options.maxLines) {
           throw new Error(
-            `[E_FILE_TOO_LARGE] ${options.displayPath ?? filePath} has more than ${options.maxLines} lines, exceeding the ${options.maxLines}-line edit limit. Hashline editing targets source-sized files; for very large files use write or a non-line-based approach.`,
+            `[E_FILE_TOO_LARGE] ${options.displayPath ?? filePath} has more than ${options.maxLines} lines, exceeding the ${options.maxLines}-line hashline limit. For very large files, use write.`,
           );
         }
       }
@@ -165,6 +169,10 @@ export async function loadFileKindAndText(
       position += chunkBytesRead;
     }
     parts.push(decodeChunk(new Uint8Array(0), false));
+
+    if (containsNul) {
+      return { kind: "binary", description: "contains NUL bytes" };
+    }
 
     return {
       kind: "text",

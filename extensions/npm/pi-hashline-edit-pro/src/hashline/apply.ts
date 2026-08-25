@@ -55,7 +55,7 @@ type NoopSpan = {
 function assertNotEmpty(originalContent: string, result: string): void {
 	if (originalContent.length > 0 && result.length === 0) {
 		throw new Error(
-			"[E_WOULD_EMPTY] Cannot empty a non-empty file via edit. Use `write` if you need to clear the file."
+			"[E_WOULD_EMPTY] A replace cannot empty a non-empty file. Use `write` to clear the file."
 		);
 	}
 }
@@ -84,11 +84,19 @@ function resToSpan(
   }
 
   if (edit.content_lines.length > 0) {
+    const lastReplacementLine = edit.content_lines[edit.content_lines.length - 1]!;
+    const endsWithBlank = lastReplacementLine.length === 0;
+    const endsAtEofWithoutNewline =
+      endLine === fileLines.length && !content.endsWith("\n");
+    const replacement = edit.content_lines.join("\n");
     return {
       kind: "replace",
       start: lineStarts[startLine - 1]!,
       end: lineStarts[endLine - 1]! + fileLines[endLine - 1]!.length,
-      replacement: edit.content_lines.join("\n"),
+      replacement:
+        endsAtEofWithoutNewline && endsWithBlank
+          ? `${replacement}\n`
+          : replacement,
     };
   }
 
@@ -147,6 +155,7 @@ export function applyEdit(
 	precomputedHashes?: string[],
 	filePath?: string,
 	servedHashes?: ReadonlySet<string>,
+	skipBoundaryDedup?: boolean,
 	): {
 	content: string;
 	firstChangedLine: number | undefined;
@@ -188,7 +197,7 @@ export function applyEdit(
 
 	let resolved = initialResolved;
 	let autoFixes: AutoFix[] | undefined;
-	if (boundaryDups.length > 0) {
+	if (boundaryDups.length > 0 && !skipBoundaryDedup) {
 		autoFixes = [];
 		const correctedEdit: HEdit = {
 			...prefixFixed,
@@ -241,6 +250,7 @@ export function applyEdit(
 			firstChangedLine: undefined,
 			lastChangedLine: undefined,
 			...(warnings.length ? { warnings } : {}),
+			...(autoFixes ? { autoFixes } : {}),
 			noopEdit: { loc: spanResult.loc, currentContent: spanResult.currentContent },
 		};
 	}

@@ -38,6 +38,7 @@ export interface NoopInput {
 	snapshotId?: string;
 	editMeta: RMeta;
 	warnings: string[] | undefined;
+	boundaryRemovedLines?: number;
 }
 
 export interface SuccessInput {
@@ -95,13 +96,18 @@ export function buildNoop(input: NoopInput): TResult {
 		snapshotId,
 		editMeta,
 		warnings,
+		boundaryRemovedLines,
 	} = input;
 
 	const noopDetailsText = noopEdit
 		? `Replacement for ${noopEdit.loc} is identical to current content:\n  ${noopEdit.loc}: ${clipLine(noopEdit.currentContent)}`
 		: "The edit produced identical content.";
+	const dedupNote =
+		boundaryRemovedLines !== undefined && boundaryRemovedLines > 0
+			? `\nBoundary dedup removed ${boundaryRemovedLines} line(s) from the replacement. Send the same edit again to apply it literally.`
+			: "";
 
-	const text = `No changes made to ${path}\nClassification: noop\n${noopDetailsText}${warnBlock(warnings)}`;
+	const text = `No changes made to ${path}\nClassification: noop\n${noopDetailsText}${dedupNote}${warnBlock(warnings)}`;
 
 	const metrics = buildMetrics({
 		classification: "noop",
