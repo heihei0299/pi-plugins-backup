@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompletionDelivery } from "./agents/types.js";
 import { SUBAGENT_COMPLETION_MESSAGE_TYPE } from "./completion-render.js";
+import { requirementForCompletion } from "./completion-requirement.js";
 import { redactPrivateText } from "./context.js";
 import { DEFAULT_MAX_CONTEXT_BYTES, MAX_TOOL_MESSAGE_BYTES, truncateUtf8 } from "./limits.js";
 import type { AgentTurnCompletion, ManagedAgent } from "./registry.js";
@@ -9,6 +10,7 @@ import { PI_SUBAGENTS_RPC_PROTOCOL } from "./transport-types.js";
 
 const MAX_COMPLETION_ERROR_BYTES = 512;
 const MAX_COMPLETIONS_PER_MESSAGE = 16;
+const MAX_ACKNOWLEDGED_COMPLETION_IDS = 2_048;
 const COMPLETION_BATCH_DELAY_MS = 10;
 
 interface CompletionMetadata {
@@ -26,6 +28,7 @@ interface CompletionMetadata {
 	structuredResult?: ManagedAgent["structuredResult"];
 	outcome?: ManagedAgent["outcome"];
 	capabilityGrant?: ManagedAgent["capabilityGrant"];
+	completionRequirement?: NonNullable<ManagedAgent["completionRequirements"]>[number];
 }
 
 interface CompletionMessage {
@@ -45,6 +48,14 @@ type CompletionPi = Pick<ExtensionAPI, "sendMessage">;
 
 export interface CompletionDeliveryBrokerOptions {
 	onDeliveryError?: (error: unknown) => void;
+	onDeliveryAttempt?: (
+		completions: readonly AgentTurnCompletion[],
+		input: {
+			delivery: "steer" | "nextTurn";
+			triggerTurn: boolean;
+			outcome: "accepted" | "failed";
+		},
+	) => void;
 	onAcknowledged?: (completions: readonly AgentTurnCompletion[], acknowledgedAt: number) => void;
 	now?: () => number;
 }
@@ -53,6 +64,7 @@ export interface CompletionDeliveryBrokerOptions {
 export class CompletionDeliveryBroker {
 	private pending: AgentTurnCompletion[] = [];
 	private readonly knownCompletionIds = new Set<string>();
+	private readonly acknowledgedCompletionIds = new Set<string>();
 	private awaitingParentAck: AgentTurnCompletion[] = [];
 	private flushTimer?: NodeJS.Timeout;
 	private wakeInFlight = false;
@@ -66,7 +78,13 @@ export class CompletionDeliveryBroker {
 	) {}
 
 	enqueue(completion: AgentTurnCompletion): void {
-		if (this.closed || this.knownCompletionIds.has(completion.completionId)) return;
+		if (
+			this.closed ||
+			this.knownCompletionIds.has(completion.completionId) ||
+			this.acknowledgedCompletionIds.has(completion.completionId)
+		) {
+			return;
+		}
 		this.knownCompletionIds.add(completion.completionId);
 		this.pending.push(completion);
 		this.scheduleFlush();
@@ -99,7 +117,6 @@ export class CompletionDeliveryBroker {
 		if (this.closed || this.pending.length === 0) return;
 		if (this.flushTimer) clearTimeout(this.flushTimer);
 		this.flushTimer = undefined;
-		if (this.delivery === "auto-resume" && !this.isRootIdle()) return;
 
 		const completions = this.pending.splice(0);
 		const batches = chunkCompletions(completions);
@@ -116,14 +133,34 @@ export class CompletionDeliveryBroker {
 					deliverAs: "steer",
 					...(triggerTurn ? { triggerTurn: true } : {}),
 				});
+				this.notifyDeliveryAttempt(batch, {
+					delivery: "steer",
+					triggerTurn,
+					outcome: "accepted",
+				});
 			} catch (primaryError) {
+				this.notifyDeliveryAttempt(batch, {
+					delivery: "steer",
+					triggerTurn,
+					outcome: "failed",
+				});
 				this.removeAwaiting(batch);
 				if (triggerTurn) this.wakeInFlight = false;
 				canWake = false;
 				this.awaitingParentAck.push(...batch);
 				try {
 					this.pi.sendMessage(message, { deliverAs: "nextTurn", triggerTurn: false });
+					this.notifyDeliveryAttempt(batch, {
+						delivery: "nextTurn",
+						triggerTurn: false,
+						outcome: "accepted",
+					});
 				} catch (fallbackError) {
+					this.notifyDeliveryAttempt(batch, {
+						delivery: "nextTurn",
+						triggerTurn: false,
+						outcome: "failed",
+					});
 					this.removeAwaiting(batch);
 					this.pending = [...batches.slice(index).flat(), ...this.pending];
 					try {
@@ -149,6 +186,7 @@ export class CompletionDeliveryBroker {
 		this.pending = [];
 		this.awaitingParentAck = [];
 		this.knownCompletionIds.clear();
+		this.acknowledgedCompletionIds.clear();
 	}
 
 	private scheduleFlush(): void {
@@ -172,11 +210,23 @@ export class CompletionDeliveryBroker {
 		this.pending = this.pending.filter(
 			(completion) => !acknowledgedIds.has(completion.completionId),
 		);
-		for (const completion of completions) this.knownCompletionIds.delete(completion.completionId);
+		for (const completion of completions) {
+			this.knownCompletionIds.delete(completion.completionId);
+			this.rememberAcknowledged(completion.completionId);
+		}
 		try {
 			this.options.onAcknowledged?.(completions, (this.options.now ?? Date.now)());
 		} catch {
 			// Context assembly already observed the message, so observer failures cannot retract it.
+		}
+	}
+
+	private rememberAcknowledged(completionId: string): void {
+		this.acknowledgedCompletionIds.add(completionId);
+		while (this.acknowledgedCompletionIds.size > MAX_ACKNOWLEDGED_COMPLETION_IDS) {
+			const oldest = this.acknowledgedCompletionIds.values().next().value;
+			if (typeof oldest !== "string") return;
+			this.acknowledgedCompletionIds.delete(oldest);
 		}
 	}
 
@@ -185,6 +235,21 @@ export class CompletionDeliveryBroker {
 		this.awaitingParentAck = this.awaitingParentAck.filter(
 			(completion) => !removed.has(completion.completionId),
 		);
+	}
+
+	private notifyDeliveryAttempt(
+		completions: readonly AgentTurnCompletion[],
+		input: {
+			delivery: "steer" | "nextTurn";
+			triggerTurn: boolean;
+			outcome: "accepted" | "failed";
+		},
+	): void {
+		try {
+			this.options.onDeliveryAttempt?.(completions, input);
+		} catch {
+			// Delivery already succeeded, so an observer cannot retract it.
+		}
 	}
 
 	private isRootIdle(): boolean {
@@ -196,7 +261,7 @@ export class CompletionDeliveryBroker {
 	}
 
 	private shouldWakeRoot(): boolean {
-		if (this.delivery !== "auto-resume" || this.wakeInFlight) return false;
+		if (this.delivery !== "auto-resume" || this.wakeInFlight || !this.isRootIdle()) return false;
 		try {
 			return !this.ctx.hasPendingMessages();
 		} catch {
@@ -276,6 +341,7 @@ function buildCompletionMessage(completions: AgentTurnCompletion[]): CompletionM
 }
 
 function completionMetadata(completion: AgentTurnCompletion): CompletionMetadata {
+	const completionRequirement = requirementForCompletion(completion.agent, completion.completionId);
 	return {
 		protocol: PI_SUBAGENTS_RPC_PROTOCOL,
 		completionId: completion.completionId,
@@ -297,6 +363,7 @@ function completionMetadata(completion: AgentTurnCompletion): CompletionMetadata
 		...(completion.agent.capabilityGrant
 			? { capabilityGrant: completion.agent.capabilityGrant }
 			: {}),
+		...(completionRequirement ? { completionRequirement } : {}),
 	};
 }
 

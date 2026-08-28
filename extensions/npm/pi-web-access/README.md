@@ -4,7 +4,7 @@
 
 # Pi Web Access
 
-**Web search, content extraction, and video understanding for Pi agent. OpenAI/Codex search, zero-config Exa search, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, AnySearch, Valyu, xAI/Grok, Bright Data SERP, SerpBase, Serper, self-hosted SearXNG, keyless DuckDuckGo, optional browser-cookie Gemini Web, or bring your own API keys.**
+**Web search, content extraction, and video understanding for Pi agent. OpenAI/Codex search, zero-config Exa search, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, AnySearch, XCrawl, Valyu, xAI/Grok, Bright Data SERP, SerpBase, Serper, self-hosted SearXNG, keyless DuckDuckGo, optional browser-cookie Gemini Web, Kimi Code Plan search, or bring your own API keys.**
 
 [![npm version](https://img.shields.io/npm/v/pi-web-access?style=for-the-badge)](https://www.npmjs.com/package/pi-web-access)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
@@ -14,7 +14,7 @@
 
 ## Why Pi Web Access
 
-**Zero Config** — Works out of the box with Exa MCP (no API key needed). If you're signed into Pi with a Codex subscription, OpenAI web search can reuse that auth. Add API keys or endpoints for OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, Valyu, SerpBase, Serper, Exa, Perplexity, or Gemini API for more control; configure a self-hosted SearXNG endpoint for private search; or opt into browser-cookie access for Gemini Web.
+**Zero Config** — Works out of the box with Exa MCP (no API key needed). If you're signed into Pi with a Codex subscription, OpenAI web search can reuse that auth. An active Kimi Code Plan signed in through `/login kimi-coding` enables explicit Kimi search without a separate Open Platform key. Add API keys or endpoints for OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, Valyu, SerpBase, Serper, Exa, Perplexity, or Gemini API for more control; configure a self-hosted SearXNG endpoint for private search; or opt into browser-cookie access for Gemini Web.
 
 **Video Understanding** — Point it at a YouTube video or local screen recording and ask questions about what's on screen. Full transcripts, visual descriptions, and frame extraction at exact timestamps.
 
@@ -49,6 +49,20 @@ Works immediately with no API keys — Exa MCP provides zero-config search. If P
 In `auto` mode (default), `web_search` tries a configured SearXNG endpoint first for local/private search. When the active Pi model is `openai-codex`, it then tries Codex-backed OpenAI search. Otherwise it tries Exa (direct API if keyed, MCP if not) before OpenAI, then Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Perplexity, Gemini API, and Gemini Web when browser-cookie access is enabled. Exa handles search; curator summary drafts are generated separately by the configured Pi summary model, defaulting to Claude Haiku, Codex Luna, Codex Terra, Gemini 3.6 Flash, GPT-5 mini, then DeepSeek V4 Flash when available. Slow summary drafts fall back to a deterministic result summary after a bounded deadline.
 
 If your OpenAI key belongs to a third-party Responses-compatible gateway, set `openaiResponsesUrl` to that gateway's full Responses endpoint. The default remains `https://api.openai.com/v1/responses`.
+
+To route automatic searches through the active Pi model, configure an ordered route without a top-level `provider`:
+
+```json
+{
+  "searchRouting": {
+    "providers": ["openai", "tavily"],
+    "useCurrentModel": true,
+    "fallbackOn": ["unsupported", "transient", "quota", "network", "invalid-response"]
+  }
+}
+```
+
+With `useCurrentModel: true`, the automatic `openai` step uses Hosted `web_search` when the active model is a GPT model backed by an official OpenAI Responses endpoint: `openai`/`openai-responses` on HTTPS `api.openai.com`, or `openai-codex`/`openai-codex-responses` on the official ChatGPT Codex endpoint. Third-party gateways, Azure, and other models continue to the next route entry. A tool-level `provider` or top-level `provider` remains an explicit override; `provider: "openai"` keeps the existing independent OpenAI/Codex search-model behavior.
 
 For sandboxed networks that provide outbound proxy transport through environment variables, set `ssrf.trustEnvProxy` to `true` to skip local DNS preflight for proxied hostnames:
 
@@ -96,7 +110,7 @@ fetch_content({ url: "/path/to/recording.mp4", prompt: "What error appears on sc
 
 ### web_search
 
-Search the web via OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, AnySearch, Valyu, xAI, Bright Data SERP, SerpBase, Serper, self-hosted SearXNG, keyless DuckDuckGo, Exa, Perplexity AI, or Gemini. Returns a synthesized answer with source citations.
+Search the web via OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, AnySearch, XCrawl, Valyu, xAI, Bright Data SERP, SerpBase, Serper, self-hosted SearXNG, keyless DuckDuckGo, Exa, Perplexity AI, Gemini, or Kimi. Returns a synthesized answer with source citations.
 
 ```typescript
 web_search({ query: "rust async programming" })
@@ -104,6 +118,7 @@ web_search({ queries: ["query 1", "query 2"] })
 web_search({ query: "latest news", numResults: 10, recencyFilter: "week" })
 web_search({ query: "...", domainFilter: ["github.com"] })
 web_search({ query: "...", provider: "openai" })
+web_search({ query: "...", provider: "kimi" })
 web_search({ query: "...", provider: "all" })
 web_search({ query: "...", includeContent: true })
 web_search({ queries: ["query 1", "query 2"], workflow: "none" })
@@ -117,18 +132,19 @@ web_search({ queries: ["query 1", "query 2"], workflow: "auto-summary" })
 | `numResults` | Results per query (default: 5, max: 20) |
 | `recencyFilter` | `day`, `week`, `month`, or `year` |
 | `domainFilter` | Limit to domains (prefix with `-` to exclude) |
-| `provider` | Configured provider when omitted or set to `auto`; `all` searches every eligible provider except Parallel MCP, DuckDuckGo, AnySearch, Valyu, xAI, Bright Data, SerpBase, and Serper simultaneously; otherwise `openai`, `brave`, `parallel`, `parallel-mcp`, `tinyfish`, `search1api`, `searchinfinity`, `querit`, `tavily`, `firecrawl`, `jina`, `serpdive`, `kagi`, `bocha`, `ollama`, `anysearch`, `valyu`, `xai`, `brightdata`, `serpbase`, `serper`, `searxng`, `duckduckgo`, `exa`, `perplexity`, or `gemini` (auto-selects when no provider or routing is configured; Parallel MCP, DuckDuckGo, AnySearch, Valyu, xAI, Bright Data, SerpBase, and Serper are explicit-only) |
+| `provider` | Configured provider when omitted or set to `auto`; `all` searches every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Bright Data, SerpBase, and Serper simultaneously; otherwise `openai`, `brave`, `parallel`, `parallel-mcp`, `tinyfish`, `search1api`, `searchinfinity`, `querit`, `tavily`, `firecrawl`, `jina`, `serpdive`, `kagi`, `bocha`, `ollama`, `anysearch`, `xcrawl`, `valyu`, `xai`, `brightdata`, `serpbase`, `serper`, `searxng`, `duckduckgo`, `exa`, `perplexity`, `gemini`, or `kimi` (auto-selects when no provider or routing is configured; Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Bright Data, SerpBase, and Serper are explicit-only) |
 | `includeContent` | Fetch full page content from sources in background |
 | `workflow` | `none` (skip curator), `summary-review` (open curator and auto-generate a summary draft, default), or `auto-summary` (generate a summary without opening the curator) |
 
 ### fetch_content
 
-Fetch URL(s) as readable markdown, exact textual HTTP bodies, direct images, or page-grounded answers. Automatically detects and handles GitHub repos, YouTube videos, PDFs, local video files, images, and regular web pages.
+Fetch URL(s) as readable markdown, exact textual HTTP bodies, direct images, or page-grounded answers. Automatically detects and handles GitHub repos, GitHub PRs and issues, YouTube videos, PDFs, local video files, images, and regular web pages.
 
 ```typescript
 fetch_content({ url: "https://example.com/article" })
 fetch_content({ urls: ["url1", "url2", "url3"] })
 fetch_content({ url: "https://github.com/owner/repo" })
+fetch_content({ url: "https://github.com/owner/repo/pull/123#discussion_r456" })
 fetch_content({ url: "https://youtube.com/watch?v=abc", prompt: "What libraries are shown?" })
 fetch_content({ url: "/path/to/recording.mp4", prompt: "What error appears on screen?" })
 fetch_content({ url: "https://youtube.com/watch?v=abc", timestamp: "23:41-25:00", frames: 4 })
@@ -185,6 +201,10 @@ The artifact includes `supported`, `contradicted`, `unclear`, or `missing-eviden
 GitHub URLs are cloned locally instead of scraped. The agent gets real file contents and a local path to explore with `read` and `bash`. Root URLs return the repo tree + README, `/tree/` paths return directory listings, `/blob/` paths return file contents.
 
 Repos over 350MB get a lightweight API-based view instead of a full clone (override with `forceClone: true`). Commit SHA URLs are handled via the API. Clones are cached for the session and wiped on session change. Private repos require the `gh` CLI. Set `githubClone.enabled` to `false` to skip this GitHub-specific clone/API handling; `fetch_content` remains available, so the URL can continue through the normal HTTP extraction path.
+
+Pull request and issue URLs are rendered as one priority-ordered markdown document instead of scraped HTML. PR views include status, body, checks when `gh` supports them, review verdicts, linked references, files, commits, conversation comments, review thread comments, truncation markers, and escalation commands. Issue views include state, metadata, body, linked closing PRs when available, and comments. Comment anchors such as `#issuecomment-...` and `#discussion_r...` are forced inline. The full rendered document is stored for `get_search_content` offsets and `findText`.
+
+`fetch_content` uses `gh pr view` or `gh issue view` first with prompts disabled. It retries with a smaller field set when an older `gh` does not know a requested field. Public unauthenticated REST is used as a bounded fallback under the same `fetchContent.domainPolicy` and SSRF rules; REST cannot include checks. Set `githubPrIssue.enabled` to `false` to skip PR/issue specialization and keep normal HTTP extraction.
 
 ### YouTube videos
 
@@ -251,13 +271,28 @@ Raw and direct-image HTTP requests use the same SSRF validation, hostname domain
 
 `fetch_content` can opt into local browser-cookie auth with `auth: "profile"`, or `auth: true` when exactly one `authFetch` profile exists. Configure profiles in `~/.pi/web-search.json`, for example `{ "authFetch": { "social": ["x.com", "instagram.com"], "work": { "hosts": ["docs.company.com"], "chromeProfile": "Profile 2", "cache": "off" } } }`. Auth fetch uses only the local direct HTTP path, requires HTTPS, allows only configured hosts and their subdomains, refuses cross-origin redirects, and never sends cookies or authenticated content to hosted extraction providers. Browser cookie extraction remains opt-in through `allowBrowserCookies: true` or `PI_ALLOW_BROWSER_COOKIES=1`.
 
+#### Proxy (`proxy`)
+
+`web_search`, `source_check`, and `fetch_content` all accept an optional `proxy` string (e.g. `"http://mcr:4444"`). When provided, every outbound HTTP(S) request is routed through `curl` instead of Node's built-in fetch — this works around Node fetch ignoring `HTTP(S)_PROXY` env vars and undici `ProxyAgent` failing the TLS handshake against several common HTTP proxies (ERR_SSL_WRONG_VERSION_NUMBER).
+
+An empty string (`""`) forces a direct connection even when a config-level proxy is set. Omitting the parameter falls back to the global `proxy` in `~/.pi/web-search.json`.
+
+```jsonc
+// ~/.pi/web-search.json — global proxy for all tools
+{
+  "proxy": "http://mcr:4444"
+}
+```
+
+Localhost, `127.0.0.1`, `[::1]`, and any host matching the `NO_PROXY` environment variable are never proxied.
+
 When Readability fails or returns only a cookie notice, the extension can retry configured Firecrawl extraction, Jina Reader (handles JS rendering server-side, no API key needed), TinyFish, Search1API, Querit, Kagi Extract, Ollama Web Fetch, Parallel, Bright Data Web Unlocker, Gemini URL Context API, and Gemini Web extraction when browser cookies are enabled. Configure `fetchRouting.providers` to change the order or set of `fetch_content` providers. Supported values are `http`, `firecrawl`, `jina`, `tinyfish`, `search1api`, `querit`, `kagi`, `ollama`, `parallel`, `parallel-mcp`, `brightdata`, and `gemini`; when absent, the default order is unchanged. `parallel-mcp` is not in the default fetch order and must be listed explicitly. For remote HTTP(S) targets, third-party hosted providers are disabled unless `fetchRouting.allowRemoteHostedProviders` is `true`, because hosted services perform their own fetch and can see a different redirect chain than the local safety gate. Firecrawl stays available as a configured extraction service. Firecrawl requests are cache-only by default and require an explicit fresh-scrape opt-in before the Firecrawl server can fetch target URLs. Bright Data Web Unlocker runs last of the remote scraping providers, ahead of only the Gemini fallbacks, because it is billed per request against a paid account; it is skipped unless both a key and an `unblocker` zone are configured. It applies no minimum-length check, so any non-empty body it returns — including a short consent or paywall stub — is the final answer for that URL and the Gemini fallbacks are not tried. Handles SPAs, JS-heavy pages, and anti-bot protections transparently. Also parses Next.js RSC flight data when present. HTML extraction also surfaces registered discovery relations (`service-desc`, `service-doc`, `service-meta`, `api-catalog`, `describedby`) from the HTTP `Link` header and matching `link`/`a[rel]` markup. Readable or rendered content remains primary; on an empty shell, the normal extraction fallbacks run before declared links are returned on their own.
 
 ## How It Works
 
 ```
 web_search(query)
-  → SearXNG (if configured) → OpenAI (when suitable) → Exa → Brave → Parallel → TinyFish → Search1API → Searchinfinity → Querit → Tavily → Firecrawl → Jina → SERPdive → Perplexity → Gemini
+  → configured searchRouting (optionally active-model-aware OpenAI Hosted Search) → automatic provider chain
 
 fetch_content(url)
   → Video file?  Gemini API (Files API) → Gemini Web (if browser cookies enabled)
@@ -300,7 +335,7 @@ Browse stored search results interactively. Lists all results from the current s
 
 ### /google-account
 
-Show the active Google account currently authenticated for Gemini Web. Useful when multiple Chromium profiles exist or `chromeProfile` is set in config.
+Show the active Google account currently authenticated for Gemini Web. If cookie extraction fails, it reports sanitized attempted browser/profile entries and whether the failure was missing required cookies, password-store access, decryption, SQLite, or profile lookup.
 
 ## Activity Monitor
 
@@ -355,9 +390,13 @@ Config defaults to `~/.pi/web-search.json`, or `web-search.json` under `PI_CODIN
   "geminiApiKey": "AIza...",
   "geminiBaseUrl": "https://my-gateway.example.com/gemini",
   "cloudflareApiKey": "...",
+  "geminiAuth": "adc",
+  "geminiProject": "my-gcp-project",
+  "geminiLocation": "us-central1",
   "provider": "openai",
   "searchRouting": {
     "providers": ["openai", "brave", "exa"],
+    "useCurrentModel": false,
     "fallbackOn": ["transient", "quota", "network", "invalid-response"]
   },
   "fetchRouting": {
@@ -382,7 +421,10 @@ Config defaults to `~/.pi/web-search.json`, or `web-search.json` under `PI_CODIN
   "image": {
     "enabled": true
   },
-  "chromeProfile": "Profile 2",
+  "browserCookies": {
+    "browser": "helium",
+    "profile": "Profile 2"
+  },
   "allowBrowserCookies": false,
   "searchModel": "gemini-3.6-flash",
   "summaryModel": "anthropic/claude-haiku-4-5",
@@ -400,6 +442,9 @@ Config defaults to `~/.pi/web-search.json`, or `web-search.json` under `PI_CODIN
     "maxRepoSizeMB": 350,
     "cloneTimeoutSeconds": 30,
     "clonePath": "/tmp/pi-github-repos"
+  },
+  "githubPrIssue": {
+    "enabled": true
   },
   "youtube": {
     "enabled": true,
@@ -434,7 +479,7 @@ Config defaults to `~/.pi/web-search.json`, or `web-search.json` under `PI_CODIN
 
 `summaryModel` accepts an optional thinking-level suffix, such as `anthropic/claude-haiku-4-5:low`. Supported suffixes are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
-All provider API-key fields (`openaiApiKey`, `braveApiKey`, `parallelApiKey`, `tinyfishApiKey`, `search1apiApiKey`, `searchinfinityApiKey`, `queritApiKey`, `tavilyApiKey`, `jinaApiKey`, `serpdiveApiKey`, `kagiApiKey`, `bochaApiKey`, `ollamaApiKey`, `serpbaseApiKey`, `anysearchApiKey`, `xaiApiKey`, `brightdataApiKey`, `firecrawlApiKey`, `exaApiKey`, `perplexityApiKey`, `geminiApiKey`, `datalabApiKey`, and `cloudflareApiKey`) accept explicit credential sources. Use `$NAME` or `${NAME}` to read one named environment variable, or prefix a trusted local shell command with `!` to resolve one value at provider request time. Escape `$$` as a literal leading `$` and `$!` as a literal leading `!`:
+All provider API-key fields (`openaiApiKey`, `braveApiKey`, `parallelApiKey`, `tinyfishApiKey`, `search1apiApiKey`, `searchinfinityApiKey`, `queritApiKey`, `tavilyApiKey`, `jinaApiKey`, `serpdiveApiKey`, `kagiApiKey`, `bochaApiKey`, `ollamaApiKey`, `serpbaseApiKey`, `anysearchApiKey`, `xcrawlApiKey`, `xaiApiKey`, `brightdataApiKey`, `firecrawlApiKey`, `exaApiKey`, `perplexityApiKey`, `geminiApiKey`, `datalabApiKey`, and `cloudflareApiKey`) accept explicit credential sources. Use `$NAME` or `${NAME}` to read one named environment variable, or prefix a trusted local shell command with `!` to resolve one value at provider request time. Escape `$$` as a literal leading `$` and `$!` as a literal leading `!`:
 
 ```json
 {
@@ -452,6 +497,8 @@ A command source is not run while the extension loads or registers tools. Each s
 Set `braveBaseUrl`, `exaBaseUrl`, or `tavilyBaseUrl` to route those providers through a compatible HTTPS API gateway. `BRAVE_BASE_URL`, `EXA_BASE_URL`, and `TAVILY_BASE_URL` are the environment-variable equivalents and take precedence over config. Brave appends `/web/search`, Exa appends `/answer` or `/search`, and Tavily appends `/search`. Defaults remain the providers' official API roots. `exaBaseUrl` applies only to keyed direct API calls; zero-config Exa MCP search continues to use Exa's hosted MCP endpoint. Invalid overrides fail before a request is sent instead of falling back to an official endpoint, and credential headers are removed if a gateway redirects to another origin.
 
 `authFetch` configures named local browser-cookie auth profiles for explicit `fetch_content` calls. A profile can be a host array (`"work": ["docs.company.com"]`) or an object with `hosts`, optional `chromeProfile`, `redirects: "same-origin"`, and `cache: "session" | "off"`.
+
+`browserCookies` selects the Chromium browser preset and profile used for Gemini Web cookies, for example `{ "browserCookies": { "browser": "helium", "profile": "Profile 1" } }`. When `browser` is set, cookie discovery checks only that browser, which avoids unrelated password-store prompts. Supported preset names are `helium`, `chrome`, `brave`, `arc`, `chromium`, and `edge`, subject to platform availability. Omit `browser` to keep automatic browser discovery. `profile` must be a profile directory name. The old top-level `chromeProfile` field is rejected; move it to `browserCookies.profile`. Arbitrary profile paths and `profilePath` are intentionally not supported.
 
 `fetchContent.domainPolicy` is an optional hostname allow/deny policy for `fetch_content` target URLs. It is off when omitted. Each bare hostname matches itself and its subdomains; `deny` wins when a hostname matches both lists. The policy is checked before HTTP(S) target handling and before each redirect followed by this extension's own fetch path. Local file paths and non-HTTP sources are not subject to this policy. It is an additional restriction: the existing SSRF guard still blocks private and internal destinations. Remote extraction services can still perform their own DNS, redirects, and egress after this extension preflights the submitted target URL, so third-party hosted HTTP(S) fallbacks stay disabled unless `fetchRouting.allowRemoteHostedProviders` is enabled for separately isolated provider deployments.
 
@@ -479,12 +526,18 @@ Bright Data Web Unlocker is a paid `fetch_content` fallback after Parallel and b
 
 **Parallel MCP.** Select `provider: "parallel-mcp"` to use Parallel Search MCP without an API key, or add it to `searchRouting`. It is explicit-only and is never chosen by `auto` or `provider: "all"`; the existing `parallel` provider remains the key-required REST API. A configured `parallelApiKey` or `PARALLEL_API_KEY` is sent as an optional Bearer token for higher MCP limits. To use MCP `web_fetch`, add `parallel-mcp` to `fetchRouting.providers` and set `fetchRouting.allowRemoteHostedProviders` to `true`; it is not part of the default fetch route.
 
-Without an explicit `$` or `!` source, `OPENAI_API_KEY`, `BRAVE_API_KEY`, `PARALLEL_API_KEY`, `TINYFISH_API_KEY`, `SEARCH1API_KEY`, `SEARCHINFINITY_API_KEY`, `QUERIT_API_KEY`, `TAVILY_API_KEY`, `JINA_API_KEY`, `SERPDIVE_API_KEY`, `KAGI_API_KEY`, `BOCHA_API_KEY`, `OLLAMA_API_KEY`, `SERPBASE_API_KEY`, `ANYSEARCH_API_KEY`, `XAI_API_KEY`, `BRIGHTDATA_API_KEY`, `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `GEMINI_API_KEY`, `DATALAB_API_KEY`, `DATALAB_PROCESSING_LOCATION`, `DATALAB_MODE`, `DATALAB_API_BASE`, `PERPLEXITY_API_KEY`, `GOOGLE_GEMINI_BASE_URL`, and `CLOUDFLARE_API_KEY` env vars retain their existing precedence over literal config file values. `openaiResponsesUrl` can point OpenAI `web_search` and `source_check` at a third-party gateway that supports the OpenAI Responses API and web search tool; it is an explicit endpoint override, not derived from Pi model provider settings, and defaults to `https://api.openai.com/v1/responses`. `openaiSearchModel` pins the model id used for OpenAI `web_search`, bypassing automatic selection (newest terra-tier model); the id is sent verbatim with whichever OpenAI auth resolves, so gateway-only model ids work too. `xaiSearchModel` similarly pins the xAI search model. `openaiSearchProviders` sets which Pi model providers OpenAI `web_search` resolves login credentials from, in priority order; it defaults to `["openai-codex", "openai"]`, entries that are not registered or not signed in are skipped, and an empty array skips Pi credentials entirely so the `openaiApiKey` / `OPENAI_API_KEY` fallback applies. Useful for choosing between multiple Codex accounts (for example a second account registered by an extension) or forcing API-key billing while signed into Codex. Configured Exa API keys use Exa's own account limits directly; any legacy local `exa-usage.json` file is ignored. `GOOGLE_GEMINI_BASE_URL` overrides the Gemini API host for Gemini generate-content calls such as search, URL context, YouTube, and local video analysis. Set it to a bare host with no trailing slash and no version segment, for example `https://my-gateway.example.com/gemini`; `geminiBaseUrl` is the config-file equivalent. When the configured host contains `gateway.ai.cloudflare.com`, authentication uses `cf-aig-authorization: Bearer <token>` from `CLOUDFLARE_API_KEY` or `cloudflareApiKey`, and `GEMINI_API_KEY` is not required for generate-content calls. Local video file upload still uses Google's Files API directly, so gateway-only video extraction falls back to Gemini Web unless a `GEMINI_API_KEY` is also configured. `provider` or `searchProvider` sets the default search provider and is used when a tool call omits `provider` or sends `"auto"`: `"all"`, `"openai"`, `"brave"`, `"parallel"`, `"parallel-mcp"`, `"tinyfish"`, `"search1api"`, `"searchinfinity"`, `"querit"`, `"tavily"`, `"firecrawl"`, `"jina"`, `"serpdive"`, `"kagi"`, `"bocha"`, `"ollama"`, `"anysearch"`, `"valyu"`, `"xai"`, `"brightdata"`, `"serpbase"`, `"serper"`, `"searxng"`, `"exa"`, `"perplexity"`, or `"gemini"`. Parallel MCP, AnySearch, Valyu, xAI, Bright Data, SerpBase, and Serper are never selected by `auto`; choose them explicitly or place them in `searchRouting`. If either single-provider field is configured, it takes precedence over `searchRouting`. Otherwise, `searchRouting` can opt into an ordered `providers` list and an explicit `fallbackOn` list containing `"transient"`, `"quota"`, `"network"`, and/or `"invalid-response"`; only those typed failures continue to the next available candidate. `"all"` is not valid inside `searchRouting.providers`, because that list defines sequential fallback rather than multi-provider aggregation. Named providers remain strict, and exhausted routes return per-provider diagnostics. `provider` can also be a non-empty array of named providers such as `["brave", "exa"]`; those providers run concurrently using the same aggregation path as `"all"`, while `"auto"` and `"all"` are invalid inside arrays. Random, weighted, sticky, and cooldown routing are not enabled. This is also updated automatically when you change the provider in the curator UI. Set `webSearch.enabled` to `false` to unregister the configured search and source-check tools while leaving fetch/content tools available. `toolNames` can opt into alternate public tool names for environments where another extension or model reserves the defaults, without changing behavior: `webSearch`, `sourceCheck`, `fetchContent`, and `getSearchContent` default to `web_search`, `source_check`, `fetch_content`, and `get_search_content`. `workflow` sets the default search workflow: `"summary-review"` (default, opens curator with auto-generated summary draft), `"auto-summary"` (returns a model-generated summary without opening the curator), or `"none"` (raw results, no curator). Overridden per-call via the `workflow` parameter on the configured search tool, or toggled at runtime with `/curator`. `chromeProfile` pins Gemini Web cookie lookup to a specific Chromium profile. When omitted, detected Chromium profiles are scanned in stable order and the first profile containing the required Gemini cookies is used. macOS discovery supports Helium, Chrome, Brave, and Arc; Linux discovery supports Chromium and Chrome. `allowBrowserCookies` enables Chromium cookie extraction for Gemini Web; it defaults to `false` to avoid browser data access and surprise macOS Keychain prompts. You can also set `PI_ALLOW_BROWSER_COOKIES=1`. Cookie databases are copied to a temporary read-only working copy; the reader uses `node:sqlite` when available and otherwise tries the `sqlite3` CLI or Python's standard-library SQLite module. `searchModel` overrides the Gemini API model used by the configured search tool without changing URL, YouTube, or video extraction defaults. Gemini API grounded search uses `gemini-3.6-flash` by default; set `searchModel` to choose another model. Gemini Web browser-cookie fallback uses its separate `gemini-3.1-pro` default because Gemini Web relies on private header values; explicitly configured unsupported Web models fail instead of silently falling back to 2.5 Flash. `summaryModel` sets the default model used for generating summary drafts in the curator UI and `auto-summary` mode (e.g. `"anthropic/claude-haiku-4-5"`, `"openai-codex/gpt-5.3-codex-spark"`, or `"openrouter/nvidia/nemotron-3-super-120b-a12b:free"`). Preferred summary and query-rewrite models also resolve through routed provider registrations such as OpenRouter when the native provider is unavailable. When Pi `enabledModels` is configured, summaries are limited to that allowlist; if no enabled summary model is available, the tool returns a deterministic summary instead of calling an unrelated model. `summaryGenerationDeadlineMs` sets the maximum time for one summary model attempt in the curator UI and `auto-summary` mode. It defaults to `30000`, must be a positive integer, and is capped at `600000`. `maxInlineContentChars` sets the direct `fetch_content` content slice and the default and maximum `get_search_content` slice. It defaults to `30000`, must be a positive integer, and is capped at `200000`; full fetched content remains stored for later retrieval. `curatorTimeoutSeconds` controls the initial curator idle timeout (default `20`, max `600`); users can still adjust the timer in the curator UI. `ssrf.allowRanges` lists CIDR ranges (e.g. `"198.18.0.0/15"`, `"fd00::/8"`) exempted from the SSRF guard that otherwise blocks private/reserved IP ranges. This unblocks `fetch_content`/`web_search` on hosts whose network proxy runs in TUN + fake-IP mode (Surge, Clash, Mihomo, Stash, ...), where public domains resolve into a synthetic reserved range. It is **off by default** — the guard stays fully enabled unless you list ranges here. Use the narrowest range that covers your proxy's fake-IP pool. All-address CIDRs such as `0.0.0.0/0` and `::/0` are rejected. `ssrf.trustEnvProxy` is a separate opt-in for sandboxed environments with valid HTTP(S) proxy env vars; it skips local DNS preflight only for proxied hostnames and still blocks localhost, literal private IPs, and `NO_PROXY` matches. It does not configure proxy transport.
-`VALYU_API_KEY` and `SERPER_API_KEY` also retain this precedence. `provider` and `searchProvider` also accept `"parallel-mcp"`, `"valyu"`, and `"serper"`; all three remain explicit-only.
+Without an explicit `$` or `!` source, `OPENAI_API_KEY`, `BRAVE_API_KEY`, `PARALLEL_API_KEY`, `TINYFISH_API_KEY`, `SEARCH1API_KEY`, `SEARCHINFINITY_API_KEY`, `QUERIT_API_KEY`, `TAVILY_API_KEY`, `JINA_API_KEY`, `SERPDIVE_API_KEY`, `KAGI_API_KEY`, `BOCHA_API_KEY`, `OLLAMA_API_KEY`, `SERPBASE_API_KEY`, `SERPER_API_KEY`, `ANYSEARCH_API_KEY`, `XCRAWL_API_KEY`, `VALYU_API_KEY`, `XAI_API_KEY`, `BRIGHTDATA_API_KEY`, `FIRECRAWL_API_KEY`, `EXA_API_KEY`, `GEMINI_API_KEY`, `DATALAB_API_KEY`, `DATALAB_PROCESSING_LOCATION`, `DATALAB_MODE`, `DATALAB_API_BASE`, `PERPLEXITY_API_KEY`, `GOOGLE_GEMINI_BASE_URL`, and `CLOUDFLARE_API_KEY` env vars retain their existing precedence over literal config file values. `openaiResponsesUrl` can point OpenAI `web_search` and `source_check` at a third-party gateway that supports the OpenAI Responses API and web search tool; it is an explicit endpoint override, not derived from Pi model provider settings, and defaults to `https://api.openai.com/v1/responses`. `openaiSearchModel` pins the model id used for OpenAI `web_search`, bypassing automatic selection (newest terra-tier model); the id is sent verbatim with whichever OpenAI auth resolves, so gateway-only model ids work too. `xaiSearchModel` similarly pins the xAI search model. `openaiSearchProviders` sets which Pi model providers OpenAI `web_search` resolves login credentials from, in priority order; it defaults to `["openai-codex", "openai"]`, entries that are not registered or not signed in are skipped, and an empty array skips Pi credentials entirely so the `openaiApiKey` / `OPENAI_API_KEY` fallback applies. Useful for choosing between multiple Codex accounts (for example a second account registered by an extension) or forcing API-key billing while signed into Codex. Configured Exa API keys use Exa's own account limits directly; any legacy local `exa-usage.json` file is ignored. `GOOGLE_GEMINI_BASE_URL` overrides the Gemini API host for Gemini generate-content calls such as search, URL context, YouTube, and local video analysis. Set it to a bare host with no trailing slash and no version segment, for example `https://my-gateway.example.com/gemini`; `geminiBaseUrl` is the config-file equivalent. When the configured host contains `gateway.ai.cloudflare.com`, authentication uses `cf-aig-authorization: Bearer <token>` from `CLOUDFLARE_API_KEY` or `cloudflareApiKey`, and `GEMINI_API_KEY` is not required for generate-content calls. Alternatively, set `geminiAuth` to `"adc"` to authenticate Gemini generate-content calls with Google Application Default Credentials (ADC) instead of an API key; calls go to the Vertex AI endpoint (`aiplatform.googleapis.com`) with an OAuth bearer token minted from the ADC file (`GOOGLE_APPLICATION_CREDENTIALS` or `~/.config/gcloud/application_default_credentials.json`, i.e. `gcloud auth application-default login`). `geminiProject`/`geminiLocation` set the Vertex project and location and fall back to the `GOOGLE_CLOUD_PROJECT`/`GOOGLE_CLOUD_LOCATION` (or `GCLOUD_PROJECT`) env vars; project and location are required. ADC supports `authorized_user` (OAuth refresh token) and `service_account` (JWT assertion) credential files, and tokens are cached and refreshed from expiry. ADC mode covers search, URL context, and PDF/inline-data extraction; YouTube and local video analysis still go through the Gemini Files API, so they fall back to Gemini Web unless a `GEMINI_API_KEY` is also configured. The access token is treated as a credential and is redacted from errors. Local video file upload still uses Google's Files API directly, so gateway-only video extraction falls back to Gemini Web unless a `GEMINI_API_KEY` is also configured. `provider` or `searchProvider` sets the default search provider and is used when a tool call omits `provider` or sends `"auto"`: `"all"`, `"openai"`, `"brave"`, `"parallel"`, `"parallel-mcp"`, `"tinyfish"`, `"search1api"`, `"searchinfinity"`, `"querit"`, `"tavily"`, `"firecrawl"`, `"jina"`, `"serpdive"`, `"kagi"`, `"bocha"`, `"ollama"`, `"anysearch"`, `"xcrawl"`, `"valyu"`, `"xai"`, `"brightdata"`, `"serpbase"`, `"serper"`, `"searxng"`, `"exa"`, `"perplexity"`, or `"gemini"`. Parallel MCP, AnySearch, XCrawl, Valyu, xAI, Bright Data, SerpBase, and Serper are never selected by `auto`; choose them explicitly or place them in `searchRouting`. If either single-provider field is configured, it takes precedence over `searchRouting`. Otherwise, `searchRouting` can opt into an ordered `providers` list and an explicit `fallbackOn` list containing `"transient"`, `"quota"`, `"network"`, and/or `"invalid-response"`; only those typed failures continue to the next available candidate. `"all"` is not valid inside `searchRouting.providers`, because that list defines sequential fallback rather than multi-provider aggregation. Named providers remain strict, and exhausted routes return per-provider diagnostics. `provider` can also be a non-empty array of named providers such as `["brave", "exa"]`; those providers run concurrently using the same aggregation path as `"all"`, while `"auto"` and `"all"` are invalid inside arrays. Random, weighted, sticky, and cooldown routing are not enabled. This is also updated automatically when you change the provider in the curator UI. Set `webSearch.enabled` to `false` to unregister the configured search and source-check tools while leaving fetch/content tools available. `toolNames` can opt into alternate public tool names for environments where another extension or model reserves the defaults, without changing behavior: `webSearch`, `sourceCheck`, `fetchContent`, and `getSearchContent` default to `web_search`, `source_check`, `fetch_content`, and `get_search_content`. `workflow` sets the default search workflow: `"summary-review"` (default, opens curator with auto-generated summary draft), `"auto-summary"` (returns a model-generated summary without opening the curator), or `"none"` (raw results, no curator). Overridden per-call via the `workflow` parameter on the configured search tool, or toggled at runtime with `/curator`. `browserCookies.profile` pins Gemini Web cookie lookup to a specific Chromium profile. When omitted, detected Chromium profiles are scanned in stable order and the first profile containing the required Gemini cookies is used. macOS discovery supports Helium, Chrome, Brave, and Arc; Linux discovery supports Chromium and Chrome. `allowBrowserCookies` enables Chromium cookie extraction for Gemini Web; it defaults to `false` to avoid browser data access and surprise macOS Keychain prompts. You can also set `PI_ALLOW_BROWSER_COOKIES=1`. Cookie databases are copied to a temporary read-only working copy; the reader uses `node:sqlite` when available and otherwise tries the `sqlite3` CLI or Python's standard-library SQLite module. `searchModel` overrides the Gemini API model used by the configured search tool without changing URL, YouTube, or video extraction defaults. Gemini API grounded search uses `gemini-3.6-flash` by default; set `searchModel` to choose another model. Gemini Web browser-cookie fallback uses its separate `gemini-3.1-pro` default because Gemini Web relies on private header values; explicitly configured unsupported Web models fail instead of silently falling back to 2.5 Flash. `summaryModel` sets the default model used for generating summary drafts in the curator UI and `auto-summary` mode (e.g. `"anthropic/claude-haiku-4-5"`, `"openai-codex/gpt-5.3-codex-spark"`, or `"openrouter/nvidia/nemotron-3-super-120b-a12b:free"`). Preferred summary and query-rewrite models also resolve through routed provider registrations such as OpenRouter when the native provider is unavailable. When Pi `enabledModels` is configured, summaries are limited to that allowlist; if no enabled summary model is available, the tool returns a deterministic summary instead of calling an unrelated model. `summaryGenerationDeadlineMs` sets the maximum time for one summary model attempt in the curator UI and `auto-summary` mode. It defaults to `30000`, must be a positive integer, and is capped at `600000`. `maxInlineContentChars` sets the direct `fetch_content` content slice and the default and maximum `get_search_content` slice. It defaults to `30000`, must be a positive integer, and is capped at `200000`; full fetched content remains stored for later retrieval. `curatorTimeoutSeconds` controls the initial curator idle timeout (default `20`, max `600`); users can still adjust the timer in the curator UI. `ssrf.allowRanges` lists CIDR ranges (e.g. `"198.18.0.0/15"`, `"fd00::/8"`) exempted from the SSRF guard that otherwise blocks private/reserved IP ranges. This unblocks `fetch_content`/`web_search` on hosts whose network proxy runs in TUN + fake-IP mode (Surge, Clash, Mihomo, Stash, ...), where public domains resolve into a synthetic reserved range. It is **off by default** — the guard stays fully enabled unless you list ranges here. Use the narrowest range that covers your proxy's fake-IP pool. All-address CIDRs such as `0.0.0.0/0` and `::/0` are rejected. `ssrf.trustEnvProxy` is a separate opt-in for sandboxed environments with valid HTTP(S) proxy env vars; it skips local DNS preflight only for proxied hostnames and still blocks localhost, literal private IPs, and `NO_PROXY` matches. It does not configure proxy transport.
+### Kimi Code Plan
+
+Run `/login kimi-coding` in Pi and complete sign-in for an active Kimi Code Plan. Then select `provider: "kimi"`, include `"kimi"` in an explicit provider array, or add it to `searchRouting.providers`. The extension resolves a model with provider `kimi-coding` from Pi's model registry and reuses Pi's refreshed OAuth credential; no Moonshot Open Platform key is configured here.
+
+Kimi search calls `POST https://api.kimi.com/coding/v1/search` with the query as `text_query`. This is the Kimi Code Plan search service, not Moonshot Open Platform `$web_search`. The endpoint exposes no native recency parameter, so `recencyFilter` is unsupported and is not sent. Shared `domainFilter` and `numResults` behavior is enforced locally on the returned `search_results`.
+
+Kimi is explicit-only: it is never chosen by `auto` and never participates in `provider: "all"`. Search usage is drawn from the Kimi Code Plan's shared subscription quota, while the response reports no per-request usage. Excluding Kimi from automatic fan-out prevents one search from consuming opaque plan quota without an explicit choice.
 
 ### All providers
 
-Set `provider: "all"` on `web_search` or `source_check`, or configure `"provider": "all"` as the default, to run the same query against every eligible search provider simultaneously. Parallel MCP, DuckDuckGo, AnySearch, Valyu, xAI, Bright Data, SerpBase, and Serper are always excluded because they are explicit-only; Bright Data, SerpBase, and Serper are paid Google SERP providers, so `all` never spends on them. Exa remains eligible through its zero-config MCP path, OpenAI can use Pi auth, and other API-backed search providers participate when their API key, local endpoint, or gateway makes them available. Browser-cookie access alone does not opt Gemini into `all`; select Gemini explicitly or configure its API/gateway.
+Set `provider: "all"` on `web_search` or `source_check`, or configure `"provider": "all"` as the default, to run the same query against every eligible search provider simultaneously. Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Bright Data, SerpBase, and Serper are always excluded because they are explicit-only; Bright Data, SerpBase, and Serper are paid Google SERP providers, while Kimi draws from the user's shared Code Plan quota, so `all` never spends either resource without an explicit request. Exa remains eligible through its zero-config MCP path, OpenAI can use Pi auth, and other API-backed search providers participate when their API key, local endpoint, or gateway makes them available. Browser-cookie access alone does not opt Gemini into `all`; select Gemini explicitly or configure its API/gateway.
 
 Successful provider answers are preserved separately while source URLs and inline content are deduplicated, and one provider failure does not discard the other results. If every participating provider fails, the tool returns per-provider diagnostics. Configured Firecrawl participates in `all` like other eligible providers. In the Curator, **All** can also be selected like the other provider buttons. Each participating provider gets its own result card, including a provider badge and independent selection checkbox; failed providers get their own disabled error card. The final summary is generated from the selected provider cards and is what Pi receives. Outside the Curator, the same provider answers remain available as labeled sections in one tool response.
 
@@ -570,6 +623,10 @@ Search requests follow the official [`querit-python`](https://github.com/querit-
 ### AnySearch
 
 AnySearch is an explicit-only provider: it is never included in zero-config `auto` fallback or in `provider: "all"`, but it can be selected with `provider: "anysearch"`, configured as the named provider, or placed in `searchRouting`. It supports anonymous requests and optional `anysearchApiKey` / `ANYSEARCH_API_KEY` credentials. Requests intentionally send only `{ query, max_results }`; `recencyFilter`, `domainFilter`, and `includeContent` do not add API request parameters. When `includeContent` is true, returned `content` fields are exposed as inline content.
+
+### XCrawl
+
+XCrawl is an explicit-only provider: it is never included in zero-config `auto` fallback or in `provider: "all"`, but it can be selected with `provider: "xcrawl"`, configured as the named provider, or placed in `searchRouting`. It requires `xcrawlApiKey` / `XCRAWL_API_KEY` credentials ([dashboard](https://dash.xcrawl.com/)). Requests send `{ engine: "google_search", q }` to the SERP endpoint; `recencyFilter`, `domainFilter`, and `includeContent` do not add API request parameters, and the shared include/exclude `domainFilter` is applied client-side. A provider-side timeout surfaces as a retriable failure rather than caller cancellation. Results with a null title fall back to the result URL; result items expose their SERP snippet as usual.
 
 ### xAI (Grok)
 
@@ -809,19 +866,19 @@ Both shortcuts are configurable via `~/.pi/web-search.json`:
 
 Values use the same format as pi keybindings (e.g. `ctrl+s`, `ctrl+shift+s`, `alt+r`). Changes take effect on next pi restart.
 
-Set `"enabled": false` under `tools`, `commands`, `image`, or `pdf` to disable that feature. Tool-specific settings override the legacy `webSearch.enabled` shorthand; without an override, it still disables `web_search` and `source_check`. `image.enabled: false` blocks direct image fetches and video frame extraction, and prevents video thumbnails. `pdf.enabled: false` blocks PDF extraction. For GitHub specifically, `githubClone.enabled: false` only skips clone/API specialization; it does not unregister `fetch_content` or block generic URL extraction. Pi restart is required for tool and command registration changes.
+Set `"enabled": false` under `tools`, `commands`, `image`, or `pdf` to disable that feature. Tool-specific settings override the legacy `webSearch.enabled` shorthand; without an override, it still disables `web_search` and `source_check`. `image.enabled: false` blocks direct image fetches and video frame extraction, and prevents video thumbnails. `pdf.enabled: false` blocks PDF extraction. For GitHub specifically, `githubClone.enabled: false` only skips clone/API specialization, and `githubPrIssue.enabled: false` only skips PR/issue specialization; neither setting unregisters `fetch_content` or blocks generic URL extraction. Pi restart is required for tool and command registration changes.
 
 Rate limits: Perplexity is capped at 10 requests/minute (client-side). Jina Search, TinyFish, Search1API, and Searchinfinity apply the plan limits documented by their APIs. Querit Search and Contents subscriptions are independent. Content fetches run 3 concurrent with a 30s timeout for the direct HTTP fetch of each URL. Remote extraction fallbacks carry their own budgets and are not covered by that number: Jina Reader 30s, Firecrawl 60s, Kagi Extract 60s, Ollama Web Fetch 60s, Bright Data Web Unlocker 60s, TinyFish up to 150s, Gemini 120s, Datalab 120s (capped at 300s, rate-limited to 25 requests/minute on the free tier). `pdf.maxSizeMB` defaults to 20 and is capped at 50. `pdf.maxPages` defaults to 100 and limits every PDF provider to the first N pages.
 
 ## Limitations
 
 - If the curator cannot open a browser automatically, such as in Docker, WSL, SSH, or headless environments, the running curator URL is shown in the tool output. Copy it into a browser that can reach the Pi host, or use a tunnel/port-forward when needed.
-- Chromium cookie extraction for Gemini Web is opt-in via `allowBrowserCookies: true` or `PI_ALLOW_BROWSER_COOKIES=1`; no browser data or password store is touched while it is disabled. On macOS, enabling it may trigger a Keychain dialog. On Windows, Chrome and Edge v10 cookies use the current user's DPAPI key; v20 app-bound cookies are not supported. Required cookie names are checked before password-store access, and browser encryption passwords are cached only in-process. If `node:sqlite` is unavailable, the reader falls back to the `sqlite3` CLI or Python stdlib; `/google-account` reports a sanitized SQLite/profile/password diagnostic when extraction fails.
+- Chromium cookie extraction for Gemini Web is opt-in via `allowBrowserCookies: true` or `PI_ALLOW_BROWSER_COOKIES=1`; no browser data or password store is touched while it is disabled. On macOS, enabling it may trigger a Keychain dialog. On Windows, Chrome and Edge v10 cookies use the current user's DPAPI key; v20 app-bound cookies are not supported. Required cookie names are checked before password-store access, and browser encryption passwords are cached only in-process. If `node:sqlite` is unavailable, the reader falls back to the `sqlite3` CLI or Python stdlib; `/google-account` reports sanitized browser/profile attempts and classifies SQLite, profile, missing-cookie, password-store, and decryption failures.
 - YouTube private/age-restricted videos may fail on all extraction paths.
 - Gemini can process videos up to ~1 hour; longer videos may be truncated.
 - PDFs are text-extracted only (no OCR for scanned documents).
 - GitHub branch names with slashes may misresolve file paths; the clone still works and the agent can navigate manually.
-- Non-code GitHub URLs (issues, PRs, wiki) fall through to normal web extraction.
+- GitHub wiki, discussion, and other non-code pages still fall through to normal web extraction. PR review-thread resolution state is unknown in the specialized PR view, and REST fallback omits checks.
 
 <details>
 <summary>Files</summary>
@@ -850,8 +907,10 @@ Rate limits: Perplexity is capped at 10 requests/minute (client-side). Jina Sear
 | `serpbase.ts` | Explicit-only SerpBase Google SERP provider |
 | `serper.ts` | Explicit-only Serper Google SERP provider |
 | `anysearch.ts` | Explicit-only AnySearch search provider |
+| `xcrawl.ts` | Explicit-only XCrawl search provider |
 | `valyu.ts` | Explicit-only Valyu research search provider |
 | `xai-search.ts` | Explicit-only xAI (Grok) hosted web_search provider |
+| `kimi-search.ts` | Explicit-only Kimi Code Plan search provider |
 | `searxng.ts` | Self-hosted SearXNG JSON API search provider |
 | `duckduckgo.ts` | Explicit-only keyless DuckDuckGo HTML search provider |
 | `exa.ts` | Exa.ai search provider — direct API and MCP proxy |
@@ -868,6 +927,7 @@ Rate limits: Perplexity is capped at 10 requests/minute (client-side). Jina Sear
 | `video-extract.ts` | Local video detection, Files API upload, Gemini analysis |
 | `github-extract.ts` | GitHub URL parsing, clone cache, content generation |
 | `github-api.ts` | GitHub API fallback for large repos and commit SHAs |
+| `github-issue-pr.ts` | GitHub PR and issue URL parsing, gh/REST fetch, markdown rendering |
 | `perplexity.ts` | Perplexity API client with rate limiting |
 | `datalab-pdf-extract.ts` | Datalab hosted PDF-to-Markdown conversion client (upload → convert → poll) |
 | `pdf-extract.ts` | PDF text extraction, saves to markdown |

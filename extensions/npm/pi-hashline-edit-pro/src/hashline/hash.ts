@@ -1,4 +1,5 @@
-import { splitLines } from "../utils";
+import { splitLines, truncateToBytes } from "../utils";
+import { MAX_HASH_SOURCE_BYTES } from "../constants";
 import {
   loadHashStore,
   type HashStore,
@@ -47,8 +48,36 @@ export const HL_PREFIX_MINUS_RE = new RegExp(
 
 export const HL_BARE_PREFIX_RE = new RegExp(`^\\s*(${HASH_RUN})│`);
 
+export type RowPrefixKind = "bare" | "plus" | "minus";
+
+export type StrippedRow = {
+	text: string;
+	kind: RowPrefixKind | null;
+	hash: string | undefined;
+};
+
+export function stripRowPrefix(line: string): StrippedRow {
+	const bare = line.match(HL_BARE_PREFIX_RE);
+	if (bare) {
+		return { text: line.slice(bare[0].length), kind: "bare", hash: bare[1] };
+	}
+	const plus = line.match(HL_PREFIX_PLUS_RE);
+	if (plus) {
+		return { text: line.slice(plus[0].length), kind: "plus", hash: plus[1] };
+	}
+	const minus = line.match(HL_PREFIX_MINUS_RE);
+	if (minus) {
+		return { text: line.slice(minus[0].length), kind: "minus", hash: minus[1] };
+	}
+	return { text: line, kind: null, hash: undefined };
+}
+
 export function canon(line: string): string {
 	return line.replace(/\r/g, "").trimEnd();
+}
+
+export function hashSource(line: string): string {
+	return truncateToBytes(canon(line), MAX_HASH_SOURCE_BYTES);
 }
 
 const BITSET_WORDS = Math.ceil(HASH_SPACE / 32);
@@ -93,7 +122,7 @@ export function _lineHashesPure(content: string): string[] {
   const hint = { value: 0 };
 
   for (let i = 0; i < lines.length; i++) {
-    const c = canon(lines[i]!);
+    const c = hashSource(lines[i]!);
     const baseIdx = (xxh32(c) >>> 14) % HASH_SPACE;
     hashes[i] = assignHash(used, baseIdx, hint);
   }
@@ -231,7 +260,7 @@ function mapStableHashes(
 
   const newByContent = new Map<string, number[]>();
   for (let i = 0; i < newLines.length; i++) {
-    const key = canon(newLines[i]!);
+    const key = hashSource(newLines[i]!);
     const list = newByContent.get(key);
     if (list) list.push(i);
     else newByContent.set(key, [i]);
@@ -246,7 +275,7 @@ function mapStableHashes(
   };
 
   for (const entry of survivors) {
-    const candidates = newByContent.get(canon(oldLines[entry.index]!));
+    const candidates = newByContent.get(hashSource(oldLines[entry.index]!));
     if (!candidates || candidates.length === 0) continue;
     const target = entry.index > spanEnd ? entry.index + shiftAfterSpan : entry.index;
     const pos = nearestNew(candidates, target);
@@ -277,7 +306,7 @@ function mapStableHashes(
 
   for (let i = 0; i < newLines.length; i++) {
     if (newHashes[i]) continue;
-    const c = canon(newLines[i]!);
+    const c = hashSource(newLines[i]!);
     const baseIdx = (xxh32(c) >>> 14) % HASH_SPACE;
     newHashes[i] = assignHash(used, baseIdx, hint);
   }

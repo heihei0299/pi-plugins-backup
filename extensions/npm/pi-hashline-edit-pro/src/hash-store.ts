@@ -66,6 +66,7 @@ interface Prepared {
   get: (...params: SqlParams) => Record<string, unknown> | undefined;
   allPaths: (...params: SqlParams) => Record<string, unknown>[];
   allHashes: (...params: SqlParams) => Record<string, unknown>[];
+  allServed: (...params: SqlParams) => Record<string, unknown>[];
   deleteOne: (...params: SqlParams) => void;
   upsert: (...params: SqlParams) => void;
   undoUpsert: (...params: SqlParams) => void;
@@ -116,6 +117,14 @@ export function parseHashList(raw: string, onInvalid: () => void): string[] | un
     return undefined;
   }
   return parsed;
+}
+
+export function parseStoredHashes(
+  row: Record<string, unknown> | undefined,
+  onInvalid: () => void,
+): string[] | undefined {
+  if (!row) return undefined;
+  return parseHashList(row.hashes as string, onInvalid);
 }
 
 function isValidSnapshot(value: unknown): value is LegacySnapshot {
@@ -172,6 +181,14 @@ function withBusyRetry<T>(fn: () => T): T {
 
 function openDbWithBusyRetry(storePath: string): { db: RawDb; stmts: Prepared } {
   return withBusyRetry(() => openDb(storePath));
+}
+
+function retriedWrite(
+  stmt: { run(...params: SqlParams): unknown },
+): (...params: SqlParams) => void {
+  return (...params) => {
+    withBusyRetry(() => { stmt.run(...params); });
+  };
 }
 
 let cachedDb: { path: string; db: RawDb; stmts: Prepared } | null = null;
@@ -238,6 +255,7 @@ function buildStore(
   if (versionRow && versionRow.value !== String(HASH_STORE_VERSION)) {
     db.exec("DELETE FROM snapshots");
     db.exec("DELETE FROM undo");
+    db.exec("DELETE FROM served");
   }
   db.prepare(
     "INSERT INTO meta (key, value) VALUES ('version', ?) " +
@@ -246,6 +264,7 @@ function buildStore(
   const getStmt = db.prepare("SELECT hashes FROM snapshots WHERE path = ? AND checksum = ? AND line_count = ?");
   const allStmt = db.prepare("SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served");
   const allHashesStmt = db.prepare("SELECT path, hashes FROM snapshots");
+  const allServedStmt = db.prepare("SELECT path, hashes FROM served");
   const delStmt = db.prepare("DELETE FROM snapshots WHERE path = ?");
   const upsertStmt = db.prepare(
     "INSERT INTO snapshots (path, checksum, line_count, hashes, updated_at) VALUES (?, ?, ?, ?, ?) " +
@@ -269,14 +288,15 @@ function buildStore(
     get: (...params) => getStmt.get(...params) as Record<string, unknown> | undefined,
     allPaths: (...params) => allStmt.all(...params) as Record<string, unknown>[],
     allHashes: (...params) => allHashesStmt.all(...params) as Record<string, unknown>[],
-    deleteOne: (...params) => { withBusyRetry(() => { delStmt.run(...params); }); },
-    upsert: (...params) => { withBusyRetry(() => { upsertStmt.run(...params); }); },
-    undoUpsert: (...params) => { withBusyRetry(() => { undoUpsertStmt.run(...params); }); },
+    allServed: (...params) => allServedStmt.all(...params) as Record<string, unknown>[],
+    deleteOne: retriedWrite(delStmt),
+    upsert: retriedWrite(upsertStmt),
+    undoUpsert: retriedWrite(undoUpsertStmt),
     undoGet: (...params) => undoGetStmt.get(...params) as Record<string, unknown> | undefined,
-    undoDelete: (...params) => { withBusyRetry(() => { undoDelStmt.run(...params); }); },
+    undoDelete: retriedWrite(undoDelStmt),
     servedGet: (...params) => servedGetStmt.get(...params) as Record<string, unknown> | undefined,
-    servedUpsert: (...params) => { withBusyRetry(() => { servedUpsertStmt.run(...params); }); },
-    servedDelete: (...params) => { withBusyRetry(() => { servedDelStmt.run(...params); }); },
+    servedUpsert: retriedWrite(servedUpsertStmt),
+    servedDelete: retriedWrite(servedDelStmt),
   };
   return { db, stmts };
 }
@@ -489,8 +509,7 @@ export function getSnapshot(
     return cached.hashes.slice();
   }
   const row = store.stmts.get(path, checksum, lineCount);
-  if (!row) return undefined;
-  const parsed = parseHashList(row.hashes as string, () => {
+  const parsed = parseStoredHashes(row, () => {
     if (deleteCorrupt) store.stmts.deleteOne(path);
     snapshotCache.delete(path);
   });
@@ -525,7 +544,7 @@ export function upsertUndo(store: HashStore, path: string, entry: UndoRecord): v
 export function getUndoEntry(store: HashStore, path: string): UndoRecord | undefined {
   const row = store.stmts.undoGet(path);
   if (!row) return undefined;
-  const parsed = parseHashList(row.hashes as string, () => store.stmts.undoDelete(path));
+  const parsed = parseStoredHashes(row, () => store.stmts.undoDelete(path));
   if (!parsed) return undefined;
   return {
     content: row.content as string,
@@ -551,7 +570,11 @@ async function statMissing(rows: { path: string }[]): Promise<string[]> {
         try {
           await stat(row.path);
           return undefined;
-        } catch {
+        } catch (error: unknown) {
+          if (errCode(error) !== "ENOENT") {
+            console.error("Failed to stat hash store path:", row.path, error);
+            return undefined;
+          }
           return row.path;
         }
       }),
@@ -571,14 +594,15 @@ export async function pruneMissing(store: HashStore): Promise<void> {
     for (const path of missing) {
       store.stmts.deleteOne(path);
       snapshotCache.delete(path);
-      store.stmts.undoDelete(path);
       store.stmts.servedDelete(path);
     }
   });
 }
 
-export function findSnapshotPaths(store: HashStore, hashes: string[]): string[] {
-  const rows = store.stmts.allHashes() as { path: string; hashes: string }[];
+function matchPathsByHashes(
+  rows: { path: string; hashes: string }[],
+  hashes: string[],
+): string[] {
   const matches: string[] = [];
   for (const row of rows) {
     try {
@@ -590,4 +614,12 @@ export function findSnapshotPaths(store: HashStore, hashes: string[]): string[] 
     }
   }
   return matches;
+}
+
+export function findSnapshotPaths(store: HashStore, hashes: string[]): string[] {
+  return matchPathsByHashes(store.stmts.allHashes() as { path: string; hashes: string }[], hashes);
+}
+
+export function findServedPaths(store: HashStore, hashes: string[]): string[] {
+  return matchPathsByHashes(store.stmts.allServed() as { path: string; hashes: string }[], hashes);
 }

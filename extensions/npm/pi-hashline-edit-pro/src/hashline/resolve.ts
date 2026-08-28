@@ -1,12 +1,11 @@
 import { abortIf, rejectUnknownFields, firstNonEmptyIndex, lastNonEmptyIndex, clipLine } from "../utils";
-import { HASH_SEP, HASH_RUN, HL_BARE_PREFIX_RE, HL_PREFIX_PLUS_RE, HL_PREFIX_MINUS_RE, canon } from "./hash";
+import { HASH_SEP, HASH_RUN, stripRowPrefix, canon } from "./hash";
 import { parseHashRef, parseText, type Anchor } from "./parse";
 import { NEW_CONTENT_NOT_ARRAY_MSG, MAX_RANGE_STALE_LINES } from "../constants";
 
 export type RAnchor = {
 	line: number;
 	hash: string;
-	hashMatched: boolean;
 };
 
 export type HEdit = { content_lines: string[]; hash_bounds: [Anchor, Anchor] };
@@ -56,7 +55,6 @@ function resAnchorFromMap(
 		return {
 			line: hashMatches[0]!,
 			hash: ref.hash,
-			hashMatched: true,
 		};
 	}
 	return { ref, kind: "ambiguous", candidates: hashMatches };
@@ -72,6 +70,19 @@ function assertAligned(
 			`${ctx}: fileHashes.length (${fileHashes.length}) must match fileLines.length (${fileLines.length}).`,
 		);
 	}
+}
+
+export function fmtRow(hash: string, line: string): string {
+	return `${hash}${HASH_SEP}${line}`;
+}
+
+export function fmtRegion(hashes: string[], lines: string[]): string {
+	if (hashes.length !== lines.length) {
+		throw new Error(
+			`fmtRegion: hashes.length (${hashes.length}) must match lines.length (${lines.length}).`,
+		);
+	}
+	return lines.map((line, index) => fmtRow(hashes[index]!, line)).join("\n");
 }
 
 export function fmtMismatchWithHashes(
@@ -141,12 +152,12 @@ function assertItem(edit: Record<string, unknown>): void {
 
   if ("remove_from" in edit && typeof edit.remove_from !== "string") {
     throw new Error(
-      `[E_BAD_SHAPE] Field "remove_from" must be an anchor string (3-char hash).`,
+      `[E_BAD_SHAPE] Field "remove_from" must be an anchor string (3-char anchor).`,
     );
   }
   if ("remove_to" in edit && typeof edit.remove_to !== "string") {
     throw new Error(
-      `[E_BAD_SHAPE] Field "remove_to" must be an anchor string (3-char hash).`,
+      `[E_BAD_SHAPE] Field "remove_to" must be an anchor string (3-char anchor).`,
     );
   }
   if (!("replacement_lines" in edit)) {
@@ -157,33 +168,36 @@ function assertItem(edit: Record<string, unknown>): void {
   }
   if (typeof edit.remove_from !== "string" || typeof edit.remove_to !== "string") {
     throw new Error(
-      `[E_BAD_SHAPE] The edit requires "remove_from" and "remove_to" anchor strings (3-char hashes from read output).`,
+      `[E_BAD_SHAPE] The edit requires "remove_from" and "remove_to" anchor strings (3-char anchors from read output).`,
     );
   }
 }
 
 export const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(${HASH_RUN})│`);
 
+export function stripAnchorRow(
+	trimmed: string,
+	entryLabel: string,
+	warnings?: string[],
+): string {
+	const match = trimmed.match(ANCHOR_ROW_RE);
+	if (!match) return trimmed;
+	const marker =
+		match[1] === "+"
+			? "diff-preview marker"
+			: match[1] === "-"
+				? 'leading "-" marker'
+				: '"anchor│" prefix';
+	warnings?.push(`[E_BAD_REF] Stripped ${marker} from ${entryLabel} "${trimmed}".`);
+	return match[2]!;
+}
+
 export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
   assertItem(edit as Record<string, unknown>);
 
   const replaceLines = parseText(edit.replacement_lines, warnings);
   const bounds = [edit.remove_from, edit.remove_to].map((ref) => {
-    const trimmed = ref.trim();
-    const match = trimmed.match(ANCHOR_ROW_RE);
-    if (match) {
-      let message: string;
-      if (match[1] === "+") {
-        message = `[E_BAD_REF] Stripped diff-preview marker from remove_from/remove_to entry "${trimmed}".`;
-      } else if (match[1] === "-") {
-        message = `[E_BAD_REF] Stripped leading "-" marker from remove_from/remove_to entry "${trimmed}".`;
-      } else {
-        message = `[E_BAD_REF] Stripped "HASH│" prefix from remove_from/remove_to entry "${trimmed}".`;
-      }
-      warnings?.push(message);
-      return match[2]!;
-    }
-    return ref;
+    return stripAnchorRow(ref.trim(), "remove_from/remove_to entry", warnings);
   }) as [string, string];
   return {
     content_lines: replaceLines,
@@ -210,10 +224,10 @@ export function stripBarePrefixes(
 	const fileHashSet = new Set(fileHashes);
 	const stripped: { lineIndex: number; matched: boolean }[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
-		const match = line.match(HL_BARE_PREFIX_RE);
-		if (!match) return line;
-		stripped.push({ lineIndex, matched: fileHashSet.has(match[1]!) });
-		return line.slice(match[0].length);
+		const result = stripRowPrefix(line);
+		if (result.kind !== "bare") return line;
+		stripped.push({ lineIndex, matched: fileHashSet.has(result.hash ?? "") });
+		return result.text;
 	});
 	if (stripped.length === 0) return edit;
 	const locations = stripped
@@ -225,7 +239,7 @@ export function stripBarePrefixes(
 			? " Verify it was pasted from read output."
 			: "";
 	warnings.push(
-		`[E_BARE_HASH_PREFIX] Stripped "HASH│" prefix from ${locations}.${guidance}`
+		`[E_BARE_HASH_PREFIX] Stripped "anchor│" prefix from ${locations}.${guidance}`
 	);
 	return { ...edit, content_lines: contentLines };
 }
@@ -236,17 +250,10 @@ export function stripDiffPrefixes(
 ): HEdit {
 	const stripped: number[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
-		const plus = line.match(HL_PREFIX_PLUS_RE);
-		if (plus) {
-			stripped.push(lineIndex);
-			return line.slice(plus[0].length);
-		}
-		const minus = line.match(HL_PREFIX_MINUS_RE);
-		if (minus) {
-			stripped.push(lineIndex);
-			return line.slice(minus[0].length);
-		}
-		return line;
+		const result = stripRowPrefix(line);
+		if (result.kind !== "plus" && result.kind !== "minus") return line;
+		stripped.push(lineIndex);
+		return result.text;
 	});
 	if (stripped.length === 0) return edit;
 	const locations = stripped.map((i) => `replacement_lines line ${i + 1}`).join(", ");
@@ -473,13 +480,36 @@ export function valEdit(
 	};
 }
 
+export function resolveAnchorLine(
+	ref: Anchor,
+	fileLines: string[],
+	fileHashes: string[],
+	filePath?: string,
+): number {
+	const { resolved, mismatches } = valEdit(
+		{ hash_bounds: [ref, ref], content_lines: [] },
+		fileLines,
+		fileHashes,
+		[],
+		undefined,
+	);
+	if (mismatches.length > 0 || !resolved) {
+		const feedback = fmtMismatchWithHashes(
+			mismatches,
+			fileLines,
+			fileHashes,
+			filePath,
+		);
+		throw new AnchorMismatchError(feedback.text, feedback.hashes);
+	}
+	return resolved.hash_bounds[0].line;
+}
+
 export class RangeStaleError extends Error {
-  readonly firstMismatchLine: number;
   readonly rangeHashes: string[];
-  constructor(message: string, firstMismatchLine: number, rangeHashes: string[]) {
+  constructor(message: string, rangeHashes: string[]) {
     super(message);
     this.name = "RangeStaleError";
-    this.firstMismatchLine = firstMismatchLine;
     this.rangeHashes = rangeHashes;
   }
 }
@@ -516,7 +546,7 @@ export function assertRangeServed(
   for (let line = startLine; line < startLine + shownLength; line++) {
     const hash = fileHashes[line - 1]!;
     shownHashes.push(hash);
-    rows.push(`${hash}${HASH_SEP}${fileLines[line - 1]}`);
+    rows.push(fmtRow(hash, clipLine(fileLines[line - 1])));
   }
   const location = filePath ? ` in ${filePath}` : "";
   const first = mismatchLines[0]!;
@@ -530,7 +560,7 @@ export function assertRangeServed(
       : "";
   const message =
     `[E_RANGE_STALE] ${mismatchText} what was shown. Nothing was modified. Current range with fresh anchors:\n\n${rows.join("\n")}${capHint}`;
-  throw new RangeStaleError(message, first, shownHashes);
+  throw new RangeStaleError(message, shownHashes);
 }
 
 export { warnUnicodeEsc };

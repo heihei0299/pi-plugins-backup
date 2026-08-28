@@ -1,13 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { initHasher } from "./src/hashline";
 import { regReplace } from "./src/replace";
-import { regReplaceUndo, clearUndo } from "./src/replace-undo";
+import { regInsert } from "./src/insert";
+import { regGrep } from "./src/grep";
+import { regUndo, clearUndo } from "./src/replace-undo";
 import { regRead, fmtReadPreview } from "./src/read";
 import type { RMetrics } from "./src/replace-response";
 import { extractWarnings } from "./src/replace-render";
 import { MAX_HASH_LINES } from "./src/hashline";
-import { AUTO_READ_MAX } from "./src/constants";
 import {
   readConfig,
   toggleAutoRead,
@@ -25,7 +26,9 @@ export default function (pi: ExtensionAPI): void {
   regRead(pi);
 
   regReplace(pi);
-  regReplaceUndo(pi);
+  regInsert(pi);
+  regGrep(pi);
+  regUndo(pi);
 
   let autoRead = true;
 
@@ -48,7 +51,7 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("toggle-auto-read", {
-    description: "Toggle auto-read anchors after write and post-edit diffs after replace and undo_last_replace",
+    description: "Toggle auto-read anchors after write and post-edit diffs after replace, insert, and undo_last_change",
     handler: async (_args, ctx) => {
       autoRead = await toggleAutoRead();
       const state = autoRead ? "enabled" : "disabled";
@@ -61,13 +64,14 @@ export default function (pi: ExtensionAPI): void {
 
     if (event.toolName === "write") {
       const writtenPath = (event.input as Record<string, unknown>)?.path;
+      let resolvedPath: string | undefined;
       if (typeof writtenPath === "string") {
         try {
-          const target = await resolveTarget(toCwd(writtenPath, ctx.cwd));
-          await clearUndo(target);
-          clearBoundaryBypass(target);
+          resolvedPath = await resolveTarget(toCwd(writtenPath, ctx.cwd));
+          await clearUndo(resolvedPath);
+          clearBoundaryBypass(resolvedPath);
           const store = await loadHashStore();
-          clearServed(store, target);
+          clearServed(store, resolvedPath);
         } catch (error) {
           console.error("Failed to clear undo after write:", error);
         }
@@ -75,7 +79,7 @@ export default function (pi: ExtensionAPI): void {
       if (!autoRead) return;
       if (typeof writtenPath !== "string") return;
       try {
-        const resolvedPath = await resolveTarget(toCwd(writtenPath, ctx.cwd));
+        resolvedPath ??= await resolveTarget(toCwd(writtenPath, ctx.cwd));
         await valAccess(resolvedPath, writtenPath);
         const file = await loadFileKindAndText(resolvedPath, { maxLines: MAX_HASH_LINES, displayPath: writtenPath });
         if (file.kind !== "text") return;
@@ -88,7 +92,7 @@ export default function (pi: ExtensionAPI): void {
           fileHashes,
           absolutePath,
           DEFAULT_MAX_BYTES,
-          AUTO_READ_MAX,
+          DEFAULT_MAX_LINES,
         );
         await recordServedSafe(absolutePath, preview.servedHashes, "auto-read", new Set(fileHashes));
         return {
@@ -111,7 +115,8 @@ export default function (pi: ExtensionAPI): void {
 
     if (
       event.toolName !== "replace" &&
-      event.toolName !== "undo_last_replace"
+      event.toolName !== "insert" &&
+      event.toolName !== "undo_last_change"
     ) return;
     if (!autoRead) return;
 

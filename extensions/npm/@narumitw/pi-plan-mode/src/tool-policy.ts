@@ -1,3 +1,4 @@
+import { isAbsolute, normalize } from "node:path";
 import type { ToolInfo } from "@earendil-works/pi-coding-agent";
 
 export const BUILTIN_SAFE_GIT_SUBCOMMANDS = [
@@ -33,7 +34,14 @@ export interface SafeSubcommands {
 	gh?: SafeGhSubcommandPath[];
 }
 
-export const SAFE_BUILTIN_PLAN_TOOLS = new Set(["read", "bash", "grep", "find", "ls"]);
+export const SAFE_BUILTIN_PLAN_TOOLS = new Set([
+	"read",
+	"bash",
+	"powershell",
+	"grep",
+	"find",
+	"ls",
+]);
 export type PlanModeToolPolicy = "read-only" | "limited" | "user-opt-in" | "blocked";
 
 const BLOCKED_BUILTIN_TOOLS = new Set(["edit", "write"]);
@@ -64,6 +72,21 @@ const MUTATING_COMMANDS = new Set([
 	"emacs",
 	"code",
 	"subl",
+]);
+const READ_ONLY_POWERSHELL_COMMANDS = new Set([
+	"format-list",
+	"format-table",
+	"get-childitem",
+	"get-content",
+	"get-item",
+	"get-location",
+	"measure-object",
+	"out-string",
+	"resolve-path",
+	"select-string",
+	"sort-object",
+	"test-path",
+	"write-output",
 ]);
 const READ_ONLY_COMMANDS = new Set([
 	"cat",
@@ -108,7 +131,7 @@ export function isBuiltinTool(tool: ToolInfo) {
 export function classifyPlanModeTool(tool: ToolInfo): PlanModeToolPolicy {
 	if (!isBuiltinTool(tool)) return "user-opt-in";
 	if (BLOCKED_BUILTIN_TOOLS.has(tool.name)) return "blocked";
-	if (tool.name === "bash") return "limited";
+	if (tool.name === "bash" || tool.name === "powershell") return "limited";
 	return SAFE_BUILTIN_PLAN_TOOLS.has(tool.name) ? "read-only" : "blocked";
 }
 
@@ -124,14 +147,145 @@ export function readCommand(input: unknown) {
 export function findBlockedCommandSegment(
 	command: string,
 	safeSubcommands: SafeSubcommands = {},
+	workingDirectory?: string,
 ): string | undefined {
 	const segments = splitShellSegments(command);
 	if (!segments || segments.length === 0) return command.trim() || "(empty command)";
-	return segments.find((segment) => !isSafeSegment(segment, safeSubcommands));
+	return segments.find((segment) => !isSafeSegment(segment, safeSubcommands, workingDirectory));
 }
 
-export function isSafeCommand(command: string, safeSubcommands: SafeSubcommands = {}) {
-	return findBlockedCommandSegment(command, safeSubcommands) === undefined;
+export function isSafeCommand(
+	command: string,
+	safeSubcommands: SafeSubcommands = {},
+	workingDirectory?: string,
+) {
+	return findBlockedCommandSegment(command, safeSubcommands, workingDirectory) === undefined;
+}
+
+export function findBlockedPowerShellCommandSegment(
+	command: string,
+	safeSubcommands: SafeSubcommands = {},
+	workingDirectory?: string,
+): string | undefined {
+	const segments = splitPowerShellSegments(command);
+	if (!segments || segments.length === 0) return command.trim() || "(empty command)";
+	return segments.find(
+		(segment) => !isSafePowerShellSegment(segment, safeSubcommands, workingDirectory),
+	);
+}
+
+export function isSafePowerShellCommand(
+	command: string,
+	safeSubcommands: SafeSubcommands = {},
+	workingDirectory?: string,
+) {
+	return (
+		findBlockedPowerShellCommandSegment(command, safeSubcommands, workingDirectory) === undefined
+	);
+}
+
+function splitPowerShellSegments(command: string): string[] | undefined {
+	const trimmed = command.trim();
+	if (!trimmed || /[\n\r`\u2018-\u201e]/.test(trimmed)) return undefined;
+
+	const segments: string[] = [];
+	let quote: "'" | '"' | undefined;
+	let start = 0;
+	for (let index = 0; index < trimmed.length; index += 1) {
+		const character = trimmed[index];
+		if (quote === "'") {
+			if (character !== "'") continue;
+			if (trimmed[index + 1] === "'") {
+				index += 1;
+				continue;
+			}
+			quote = undefined;
+			continue;
+		}
+		if (quote === '"') {
+			if (character === "$" || character === "`") return undefined;
+			if (character === '"') quote = undefined;
+			continue;
+		}
+		if (character === "'" || character === '"') {
+			quote = character;
+			continue;
+		}
+		if (["$", "@", "#", "!", "?", "{", "}", "(", ")", "[", "]", ">", "<"].includes(character)) {
+			return undefined;
+		}
+		const next = trimmed[index + 1];
+		if (character === "&" || (character === "|" && next === "|")) return undefined;
+		const separatorLength = character === ";" || character === "|" ? 1 : 0;
+		if (separatorLength === 0) continue;
+		const segment = trimmed.slice(start, index).trim();
+		if (!segment) return undefined;
+		segments.push(segment);
+		index += separatorLength - 1;
+		start = index + 1;
+	}
+	if (quote) return undefined;
+	const finalSegment = trimmed.slice(start).trim();
+	if (!finalSegment) return undefined;
+	segments.push(finalSegment);
+	return segments;
+}
+
+function isSafePowerShellSegment(
+	segment: string,
+	safeSubcommands: SafeSubcommands,
+	workingDirectory?: string,
+) {
+	const tokens = powerShellWords(segment);
+	if (!tokens || tokens.length === 0 || tokens.includes("--%")) return false;
+	const command = tokens[0]?.toLowerCase();
+	if (!command) return false;
+	const args = tokens.slice(1);
+	if (READ_ONLY_POWERSHELL_COMMANDS.has(command)) return true;
+	if (command !== "git" && command !== "gh") return false;
+	return isSafeStructuredCommand(command, args, safeSubcommands, workingDirectory);
+}
+
+function powerShellWords(segment: string): string[] | undefined {
+	const words: string[] = [];
+	let word = "";
+	let hasWord = false;
+	let quote: "'" | '"' | undefined;
+	for (let index = 0; index < segment.length; index += 1) {
+		const character = segment[index];
+		if (quote === "'") {
+			if (character !== "'") {
+				word += character;
+				continue;
+			}
+			if (segment[index + 1] === "'") {
+				word += "'";
+				index += 1;
+				continue;
+			}
+			quote = undefined;
+			continue;
+		}
+		if (quote === '"') {
+			if (character === '"') quote = undefined;
+			else word += character;
+			continue;
+		}
+		if (character === "'" || character === '"') {
+			quote = character;
+			hasWord = true;
+		} else if (/\s/.test(character)) {
+			if (hasWord) words.push(word);
+			word = "";
+			hasWord = false;
+		} else {
+			word += character;
+			hasWord = true;
+		}
+	}
+	if (quote) return undefined;
+	if (hasWord) words.push(word);
+	return words;
 }
 
 function splitShellSegments(command: string): string[] | undefined {
@@ -187,7 +341,11 @@ function splitShellSegments(command: string): string[] | undefined {
 	return segments;
 }
 
-function isSafeSegment(segment: string, safeSubcommands: SafeSubcommands) {
+function isSafeSegment(
+	segment: string,
+	safeSubcommands: SafeSubcommands,
+	workingDirectory?: string,
+) {
 	if (hasShellExpansion(segment) || /(^|\s)[A-Za-z_][A-Za-z0-9_]*=/.test(segment)) {
 		return false;
 	}
@@ -198,7 +356,7 @@ function isSafeSegment(segment: string, safeSubcommands: SafeSubcommands) {
 	const args = tokens.slice(1);
 	if (!hasSafeArguments(command, args)) return false;
 	if (READ_ONLY_COMMANDS.has(command)) return true;
-	return isSafeStructuredCommand(command, args, safeSubcommands);
+	return isSafeStructuredCommand(command, args, safeSubcommands, workingDirectory);
 }
 
 function hasShellExpansion(segment: string) {
@@ -375,8 +533,9 @@ function isSafeStructuredCommand(
 	command: string,
 	args: string[],
 	safeSubcommands: SafeSubcommands,
+	workingDirectory?: string,
 ) {
-	if (command === "git") return isSafeGitCommand(args, safeSubcommands);
+	if (command === "git") return isSafeGitCommand(args, safeSubcommands, workingDirectory);
 	if (command === "gh") return isSafeGhCommand(args, safeSubcommands);
 
 	const subcommandIndex = args.findIndex((argument) => !argument.startsWith("-"));
@@ -425,9 +584,13 @@ function isSafeStructuredCommand(
 	return false;
 }
 
-function isSafeGitCommand(args: string[], safeSubcommands: SafeSubcommands) {
-	let subcommandIndex = 0;
-	while (args[subcommandIndex] === "--no-pager") subcommandIndex += 1;
+function isSafeGitCommand(
+	args: string[],
+	safeSubcommands: SafeSubcommands,
+	workingDirectory?: string,
+) {
+	const subcommandIndex = parseGitGlobalOptions(args, workingDirectory);
+	if (subcommandIndex === undefined) return false;
 	const subcommand = args[subcommandIndex]?.toLowerCase();
 	if (!subcommand || subcommand.startsWith("-")) return false;
 	const subcommandArgs = args.slice(subcommandIndex + 1);
@@ -444,6 +607,28 @@ function isSafeGitCommand(args: string[], safeSubcommands: SafeSubcommands) {
 		hasSafeGitArguments(subcommand, subcommandArgs) &&
 		validator(subcommandArgs)
 	);
+}
+
+function parseGitGlobalOptions(args: string[], workingDirectory?: string) {
+	let index = 0;
+	while (index < args.length) {
+		const argument = args[index];
+		if (argument === "--no-pager") {
+			index += 1;
+			continue;
+		}
+		if (argument !== "-C") break;
+		const directory = args[index + 1];
+		if (!directory || !isCurrentWorkingDirectory(directory, workingDirectory)) return undefined;
+		index += 2;
+	}
+	return index;
+}
+
+function isCurrentWorkingDirectory(directory: string, workingDirectory?: string) {
+	if (!workingDirectory || directory.split(/[\\/]+/u).includes("..")) return false;
+	if (normalize(directory) === ".") return true;
+	return isAbsolute(directory) && normalize(directory) === normalize(workingDirectory);
 }
 
 function hasSafeGitArguments(subcommand: string, args: string[]) {

@@ -1,6 +1,6 @@
 {
 	"name": "@narumitw/pi-plan-mode",
-	"version": "0.53.0",
+	"version": "0.55.3",
 	"description": "Pi extension that adds a Codex-like read-only /plan collaboration mode.",
 	"type": "module",
 	"license": "MIT",
@@ -38,9 +38,9 @@
 		"@earendil-works/pi-tui": "*"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.9",
-		"@earendil-works/pi-coding-agent": "0.84.2",
-		"@earendil-works/pi-tui": "0.84.2",
+		"@biomejs/biome": "2.5.10",
+		"@earendil-works/pi-coding-agent": "0.84.3",
+		"@earendil-works/pi-tui": "0.84.3",
 		"esbuild": "0.28.2",
 		"typescript": "7.0.2"
 	},
@@ -50,6 +50,6 @@
 		"directory": "packages/pi-plan-mode"
 	},
 	"dependencies": {
-		"@narumitw/pi-tui-kit": "^0.57.1"
+		"@narumitw/pi-tui-kit": "^0.59.0"
 	}
 }

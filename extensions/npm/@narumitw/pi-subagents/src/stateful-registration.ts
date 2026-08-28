@@ -17,6 +17,10 @@ import {
 	THINKING_LEVELS,
 } from "./agents/types.js";
 import type { CompletionDeliveryBroker } from "./completion-delivery.js";
+import {
+	CompletionRequirementModeSchema,
+	completionRequirementsFromBranch,
+} from "./completion-requirement.js";
 import type { ContextMode } from "./context.js";
 import type { CreateStatefulTransportOptions } from "./create-stateful-transport.js";
 import { DelegationContractSchema } from "./delegation-contract.js";
@@ -55,7 +59,9 @@ import {
 	validateManageParams,
 } from "./stateful-tool-params.js";
 import { MAX_TASK_NAME_LENGTH } from "./task-path.js";
+import { grammarSafeToolObject } from "./tool-schema-compatibility.js";
 import { MAX_SUBAGENT_TOOL_CALLS, MAX_SUBAGENT_TURNS } from "./turn-budget.js";
+import type { UsageRecordingController } from "./usage-recording.js";
 import type { WorkspaceManager } from "./workspace.js";
 
 type CwdPolicyModule = typeof import("./cwd-policy.js");
@@ -196,6 +202,21 @@ const StatefulTimeoutSchema = Type.Integer({
 	description:
 		"Work deadline in milliseconds selected for the task difficulty. On expiry, Pi aborts the work and makes one separately bounded summary attempt. Retained as the agent default.",
 });
+const DEFAULT_SUBAGENT_AWAIT_TIMEOUT_MS = 30_000;
+const SubagentAwaitParams = Type.Object({
+	agentId: Type.String({
+		minLength: 1,
+		description: "Retained agent ID or canonical task path.",
+	}),
+	timeoutMs: Type.Optional(
+		Type.Integer({
+			minimum: 1,
+			maximum: MAX_SUBAGENT_TIMEOUT_MS,
+			description:
+				"Maximum time to wait in milliseconds. A wait timeout stops only this tool call and does not interrupt or close the subagent. Defaults to 30000.",
+		}),
+	),
+});
 const StatefulTurnLimitFields = {
 	idleTimeoutMs: Type.Optional(
 		Type.Integer({
@@ -209,14 +230,16 @@ const StatefulTurnLimitFields = {
 		Type.Integer({
 			minimum: 1,
 			maximum: MAX_SUBAGENT_TURNS,
-			description: "Maximum unfinished assistant turns; retained as the agent default.",
+			description:
+				"Maximum unfinished assistant turns; retained as the agent default. Omit rather than guessing a tight bound.",
 		}),
 	),
 	maxToolCalls: Type.Optional(
 		Type.Integer({
 			minimum: 1,
 			maximum: MAX_SUBAGENT_TOOL_CALLS,
-			description: "Maximum tool calls; retained as the agent default.",
+			description:
+				"Maximum tool calls; retained as the agent default. Omit rather than guessing a tight bound.",
 		}),
 	),
 };
@@ -227,6 +250,7 @@ export interface StatefulSubagentDependencies {
 	settings?: SubagentRuntimeSettings;
 	getSettings?: () => SubagentSettings | undefined;
 	loadTransport?: CreateStatefulTransportOptions["loadTransport"];
+	usageRecording?: UsageRecordingController;
 }
 
 export interface StatefulSubagentRuntimeStatus {
@@ -242,8 +266,6 @@ export interface StatefulSubagentRuntimeStatus {
 export interface StatefulSubagentController {
 	getCompletionDelivery(): CompletionDelivery;
 	setCompletionDelivery(value: CompletionDelivery): void;
-	setAgentCatalog(value: string): void;
-	refreshSettingsGuidance(): void;
 	getRuntimeStatus(): StatefulSubagentRuntimeStatus;
 	listAgents(includeClosed?: boolean): ManagedAgent[];
 	listRunInspection(includeClosed?: boolean): AgentRunInspectionSummary[];
@@ -268,10 +290,8 @@ export function registerStatefulSubagents(
 	const transportKind = resolveStatefulTransportKind(settings.transport);
 	let completionDelivery = resolveCompletionDelivery(settings.completionDelivery);
 	let runtimeLimits = resolveStatefulLimits(settings);
-	let agentCatalog = "";
 	let completionBroker: CompletionDeliveryBroker | undefined;
 	let peerBroker: import("./peer-communication.js").PeerCommunicationBroker | undefined;
-	let refreshSpawnToolRegistration: (() => void) | undefined;
 	let registry: AgentRegistry | undefined;
 	let persistence: AgentPersistence | undefined;
 	let sweepTimer: NodeJS.Timeout | undefined;
@@ -325,14 +345,6 @@ export function registerStatefulSubagents(
 		setCompletionDelivery(value) {
 			completionDelivery = value;
 			completionBroker?.setDelivery(value);
-			refreshSpawnToolRegistration?.();
-		},
-		setAgentCatalog(value) {
-			agentCatalog = value;
-			refreshSpawnToolRegistration?.();
-		},
-		refreshSettingsGuidance() {
-			refreshSpawnToolRegistration?.();
 		},
 		getRuntimeStatus() {
 			const counts = registry?.inspectionCounts() ?? { activeAgents: 0, retainedAgents: 0 };
@@ -362,7 +374,7 @@ export function registerStatefulSubagents(
 		if (!registry) throw new Error("Stateful subagents are not initialized for this session");
 		return registry;
 	};
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		const generation = ++runtimeGeneration;
 		completionBroker?.close();
 		completionBroker = undefined;
@@ -415,9 +427,16 @@ export function registerStatefulSubagents(
 						const reason = error instanceof Error ? error.message : String(error);
 						ctx.ui.notify(`Subagent completion delivery failed: ${reason}`, "warning");
 					},
+					onDeliveryAttempt: (completions, input) => {
+						if (generation !== runtimeGeneration) return;
+						for (const completion of completions) {
+							dependencies.usageRecording?.recordCompletionDeliveryAttempt(completion, input);
+						}
+					},
 					onAcknowledged: (completions, deliveredAt) => {
 						if (generation !== runtimeGeneration) return;
 						for (const completion of completions) {
+							dependencies.usageRecording?.recordCompletionVisible(completion);
 							void nextRegistry
 								.markCompletionDelivered(completion.completionId, deliveredAt)
 								.catch((error: unknown) => {
@@ -479,6 +498,7 @@ export function registerStatefulSubagents(
 					if (generation !== runtimeGeneration) return;
 					await sessionPersistence.save(agents);
 					if (generation !== runtimeGeneration) return;
+					dependencies.usageRecording?.observeAgents(agents);
 					for (const agent of agents) {
 						for (const message of agent.mailbox) {
 							if (seenMessageIds.has(message.id)) continue;
@@ -506,9 +526,9 @@ export function registerStatefulSubagents(
 					}
 				},
 				onTurnComplete: (completion) => {
-					if (generation === runtimeGeneration && completion.recipientId === "root") {
-						sessionBroker.enqueue(completion);
-					}
+					if (generation !== runtimeGeneration) return;
+					dependencies.usageRecording?.recordChildCompletion(completion);
+					if (completion.recipientId === "root") sessionBroker.enqueue(completion);
 				},
 			});
 			const persisted = sessionPersistence.load();
@@ -550,6 +570,26 @@ export function registerStatefulSubagents(
 				for (const message of agent.mailbox) seenMessageIds.add(message.id);
 			}
 			nextRegistry.restore(restored);
+			const branchRequirements = completionRequirementsFromBranch(ctx.sessionManager.getBranch());
+			const branchOwnsRequirementState =
+				branchRequirements.observedState || event.reason === "fork" || event.reason === "new";
+			nextRegistry.reconcileCompletionRequirements(
+				branchRequirements.records,
+				branchOwnsRequirementState,
+			);
+			if (branchOwnsRequirementState) {
+				try {
+					await sessionPersistence.save(nextRegistry.list(true));
+				} catch (error) {
+					if (generation === runtimeGeneration && ctx.hasUI) {
+						const reason = error instanceof Error ? error.message : String(error);
+						ctx.ui.notify(
+							`Subagent requirement reconciliation could not be persisted yet: ${reason}`,
+							"warning",
+						);
+					}
+				}
+			}
 			if (generation !== runtimeGeneration) {
 				sessionBroker.close();
 				await sessionPeerBroker.close();
@@ -564,7 +604,6 @@ export function registerStatefulSubagents(
 				if (completion.recipientId === "root") sessionBroker.enqueue(completion);
 			}
 			runtimeLimits = nextLimits;
-			refreshSpawnToolRegistration?.();
 			const sweepEveryMs = Math.max(
 				1_000,
 				Math.min(sessionSettings.idleTtlMs ?? 60 * 60 * 1000, 60_000),
@@ -631,15 +670,14 @@ export function registerStatefulSubagents(
 		await transition;
 	});
 
-	const baseSpawnDescription = () =>
-		`Start an addressable background subagent with an opaque agentId and canonical taskPath, plus an optional thinking level and execution budgets chosen for the task difficulty, return immediately with an agentId, and receive its completion asynchronously. Detached capacity: ${runtimeLimits.maxAgents} retained agents, ${runtimeLimits.maxActiveTurns} active turns, ${runtimeLimits.maxChildrenPerAgent} direct children per agent, and depth ${runtimeLimits.maxDepth}. Working-directory target policy: ${dependencies.getSettings?.()?.cwdPolicy?.delegation ?? DEFAULT_DELEGATION_CWD_POLICY}. This controls launch targets and protected project resources, not filesystem access or sandboxing.`;
 	const spawnTool = defineTool({
 		name: "subagent_spawn",
 		label: "Spawn Subagent",
-		description: appendAgentCatalog(baseSpawnDescription(), agentCatalog),
+		description:
+			"Start an addressable background subagent with an opaque agentId and canonical taskPath, an optional thinking level and execution budgets chosen for the task difficulty, and asynchronous completion delivery. The current bounded capacity, completion policy, working-directory policy, and available agent definitions are published in the pi-subagents session-guidance message. Working-directory policy controls launch targets and protected project resources, not filesystem access or sandboxing.",
 		promptSnippet: "Start a reusable detached subagent; completion is delivered asynchronously",
-		promptGuidelines: createSpawnPromptGuidelines(completionDelivery, blockingEnabled),
-		parameters: Type.Object({
+		promptGuidelines: createSpawnPromptGuidelines(blockingEnabled),
+		parameters: grammarSafeToolObject({
 			agent: Type.String({ minLength: 1 }),
 			taskName: Type.Optional(
 				Type.String({
@@ -689,6 +727,7 @@ export function registerStatefulSubagents(
 						"Use text (default), structured-v1, or the evidence-preserving structured-v2 completion contract.",
 				}),
 			),
+			completionRequirement: Type.Optional(CompletionRequirementModeSchema),
 		}),
 		...createStatefulToolRenderer("spawn"),
 		async execute(_id, params, signal, _update, ctx) {
@@ -780,6 +819,7 @@ export function registerStatefulSubagents(
 				allowConcurrentWrites: params.allowConcurrentWrites ?? false,
 				contract,
 				resultFormat,
+				completionRequirement: params.completionRequirement ?? "background",
 			});
 			if (!capturedRegistry) {
 				throw new Error("Stateful subagents are not initialized for this session");
@@ -873,6 +913,7 @@ export function registerStatefulSubagents(
 						spawnRequestHash: params.idempotencyKey ? requestHash : undefined,
 						contract,
 						resultFormat: resultFormat === "text" ? undefined : resultFormat,
+						completionRequirement: params.completionRequirement ?? "background",
 						executionPlan,
 						capabilityGrant,
 						semanticSnapshot,
@@ -892,11 +933,15 @@ export function registerStatefulSubagents(
 				resolvePending?.(agent);
 				const deliveryNote =
 					completionDelivery === "auto-resume"
-						? "Auto-resume will request synthesis after completion."
+						? "Auto-resume steers completions into active parent work or requests synthesis when idle. Treat this response as progress, not final synthesis, until every final-answer-required completion message is visible. If local work is exhausted while required children remain active, emit at most one brief progress sentence and end the turn; do not repeat waiting updates or use the requested final format, verdict, or conclusion. Do not redo a running child's assigned work."
 						: "The current response must not depend on the result because next-turn delivery will not wake an idle root.";
+				const requirementNote =
+					params.completionRequirement === "required"
+						? "This exact run is runtime-tracked as required until its completion becomes visible or reaches an explicit terminal state. Current Pi versions still cannot prevent already-streamed premature output."
+						: "This run is background work and does not block the parent final answer.";
 				return result(
 					agent,
-					`Spawned ${agent.agent} as ${agent.taskPath ?? agent.id} (${agent.id}). Continue the identified non-overlapping local work immediately; do not merely announce the spawn or end while useful local work remains. Only an explicit user-requested specialist model, tool-profile, or isolation exception may lack concurrent local work. ${deliveryNote} Do not poll for progress.`,
+					`Spawned ${agent.agent} as ${agent.taskPath ?? agent.id} (${agent.id}). ${requirementNote} Continue the identified non-overlapping local work immediately; do not merely announce the spawn or end while useful local work remains. Only an explicit user-requested specialist model, tool-profile, or isolation exception may lack concurrent local work. ${deliveryNote} Do not poll for progress.`,
 				);
 			} catch (error) {
 				rejectPending?.(error);
@@ -912,12 +957,7 @@ export function registerStatefulSubagents(
 			}
 		},
 	});
-	refreshSpawnToolRegistration = () => {
-		spawnTool.description = appendAgentCatalog(baseSpawnDescription(), agentCatalog);
-		spawnTool.promptGuidelines = createSpawnPromptGuidelines(completionDelivery, blockingEnabled);
-		pi.registerTool(spawnTool);
-	};
-	refreshSpawnToolRegistration();
+	pi.registerTool(spawnTool);
 
 	pi.registerTool({
 		name: "subagent_send",
@@ -937,6 +977,7 @@ export function registerStatefulSubagents(
 				}),
 			),
 			...StatefulTurnLimitFields,
+			completionRequirement: Type.Optional(CompletionRequirementModeSchema),
 			revalidate: Type.Optional(
 				Type.Boolean({
 					description:
@@ -1055,11 +1096,36 @@ export function registerStatefulSubagents(
 				idleTimeoutMs: params.idleTimeoutMs,
 				maxTurns: params.maxTurns,
 				maxToolCalls: params.maxToolCalls,
+				completionRequirement: params.completionRequirement ?? "background",
 			});
 			assertCurrentSpawn(signal, generation, runtimeGeneration);
 			return result(agent, `Started follow-up for ${agent.id}.`);
 		},
 	});
+
+	if (blockingEnabled) {
+		pi.registerTool({
+			name: "subagent_await",
+			label: "Await Subagent",
+			description:
+				"Wait for one retained subagent's current turn to settle and return its latest bounded output. This blocks Pi from processing queued steering until the wait finishes. A wait timeout or caller cancellation stops only the wait and never interrupts or closes the subagent; use subagent_manage for lifecycle changes. Automatic completion delivery remains active and may later repeat the same at-least-once completion.",
+			promptSnippet:
+				"Intentionally block until one retained subagent settles or the wait times out",
+			promptGuidelines: [
+				"Use subagent_await only when the retained result is required before the next action, useful overlapping main-agent work is complete, and blocking Pi is intentional.",
+				"Do not repeatedly call subagent_await after a timeout; the subagent keeps running and completion delivery remains active. Use subagent_manage only when the user wants to interrupt or close it.",
+			],
+			parameters: SubagentAwaitParams,
+			...createStatefulToolRenderer("await"),
+			async execute(_id, params, signal): Promise<StatefulActionToolResult> {
+				const generation = runtimeGeneration;
+				const timeoutMs = params.timeoutMs ?? DEFAULT_SUBAGENT_AWAIT_TIMEOUT_MS;
+				const waited = await requireRegistry().wait(params.agentId, timeoutMs, signal);
+				assertCurrentSpawn(signal, generation, runtimeGeneration);
+				return awaitResult(waited.agent, waited.timedOut, timeoutMs);
+			},
+		});
+	}
 
 	pi.registerTool({
 		name: "subagent_manage",
@@ -1214,14 +1280,38 @@ async function cleanupClosedWorkspaces(
 	}
 }
 
-function appendAgentCatalog(baseDescription: string, catalog: string): string {
-	return catalog ? `${baseDescription}\n\n${catalog}` : baseDescription;
-}
-
 function result(agent: ManagedAgent, text: string) {
 	return {
 		content: [{ type: "text" as const, text }],
 		details: { agent: summarizeStatefulAgent(agent) },
+	};
+}
+
+function awaitResult(agent: ManagedAgent, timedOut: boolean, timeoutMs: number) {
+	const latestTurn = agent.history.at(-1);
+	const output = timedOut
+		? ""
+		: truncateUtf8(latestTurn?.output ?? "", DEFAULT_MAX_CONTEXT_BYTES).text;
+	const error = timedOut ? "" : truncateUtf8(agent.error ?? "", MAX_TOOL_MESSAGE_BYTES).text;
+	const text = timedOut
+		? `Stopped waiting for ${agent.taskPath ?? agent.id} after ${timeoutMs}ms; it remains ${agent.state}. The wait did not interrupt or close the subagent.`
+		: [`Subagent ${agent.taskPath ?? agent.id} settled as ${agent.state}.`, output || error]
+				.filter(Boolean)
+				.join("\n\n");
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: truncateUtf8(text, DEFAULT_MAX_CONTEXT_BYTES).text,
+			},
+		],
+		details: {
+			agent: summarizeStatefulAgent(agent),
+			timedOut,
+			timeoutMs,
+			...(output ? { output } : {}),
+			...(error ? { error } : {}),
+		},
 	};
 }
 

@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.30.0] - 2026-08-28
+
+### Highlights
+- Other extensions can safely inspect one runtime MCP server without seeing the whole MCP config.
+- OAuth setup works better with providers that publish authorization metadata at a custom URL.
+- MCP tool names are safer for providers, including servers with non-ASCII names.
+- Token CLI commands and Windows request-header cleanup are less fragile in installed packages and long-running sessions.
+
+### Added
+
+- Added a fail-closed API for child extensions to inspect one selected runtime MCP server without exporting configured servers or persisting the registration. (#453)
+- Added `oauth.authServerMetadataUrl` for servers whose authorization-server metadata cannot be discovered through MCP protected-resource metadata. Thanks to [@fmoda3](https://github.com/fmoda3) for #458.
+
+### Fixed
+
+- Namespace proxy tool names now use provider-safe characters without making encoded-looking server names collide with non-ASCII server names. Thanks to [@nyankosama](https://github.com/nyankosama) for PR #463.
+- npm-installed token CLI commands now load their credential, config, and utility helpers from the published JavaScript build instead of package-local TypeScript files. Thanks to [@Qhilm](https://github.com/Qhilm) for #456.
+- Server-scoped MCP calls now resolve raw upstream tool names before normalized fallbacks without weakening ambiguity checks. Thanks to [@MikeLP](https://github.com/MikeLP) for #452.
+- Windows request-header command cleanup now treats an already-exited process (`taskkill` exit code 128) as successful cleanup. Thanks to [@peterxcx](https://github.com/peterxcx) for #457.
+
+## [2.29.0] - 2026-08-26
+
+### Highlights
+- `/mcp setup` can now add Parallel Search as an opt-in preset.
+- Users can try web search and page fetching without first creating an API key.
+- MCP status updates work better in non-TUI hosts that provide plain theme values.
+
+### Added
+- Added an opt-in Parallel Search preset to `/mcp setup` for web search and page fetching without an API key. Thanks to [@georgeatparallel](https://github.com/georgeatparallel) for PR #448.
+
+### Fixed
+- MCP status updates now use plain text when a non-TUI host provides a theme without styling methods. Thanks to [@jinnnyang](https://github.com/jinnnyang) for #449.
+
+## [2.28.0] - 2026-08-26
+
+### Highlights
+- MCP connections are less fragile when servers fail, recover, move slowly, or refresh their catalogs.
+- Direct MCP tools are safer to expose, with stricter input checks and bounded result details when hosts opt in.
+- Other Pi extensions can register MCP servers at runtime without sharing module state.
+- Proxy calls now show live server progress in the interactive UI.
+- Package installs and public helper imports are easier to use from downstream hosts.
+
+### Added
+- Persistent metadata cache entries now honor server `ttlMs` hints without extending the default max age. Thanks to [@Seinra](https://github.com/Seinra) for #431.
+- Proxy tool calls now forward server progress notifications to the interactive UI. Thanks to [@Seinra](https://github.com/Seinra) for PR #440 and for mapping the area in #431.
+- Added a pure `mcp:` reference resolver API for consumers that validate adapter tool names from explicit config and cache inputs. Thanks to [@abdwhb-png](https://github.com/abdwhb-png) for PR #420.
+- Direct tools can opt into strict advertised-schema validation with one-layer JSON recovery for object and array properties. Thanks to [@4ndr3wxh1ll](https://github.com/4ndr3wxh1ll) for PR #430.
+- Direct tools can opt into guarded raw MCP result details, retaining bounded structured fields while summarizing oversized values.
+- Embedding hosts can import the configuration loader and metadata cache helpers from public package subpaths, and can validate cached metadata against an explicit private process environment.
+
+### Fixed
+- Runtime MCP registration now works across separately loaded Pi extensions through a versioned shared event contract. Thanks to [@fmoda3](https://github.com/fmoda3) for #443.
+- Stdio MCP startup errors now identify a configured missing or non-directory `cwd` instead of blaming the executable. Thanks to [@SoyElf](https://github.com/SoyElf) for #442.
+- Package installs with `--omit=dev` no longer run the public helper build during `prepare`; Git installs and package tarballs still include the built public exports. Thanks to [@KripaMishra](https://github.com/KripaMishra) for #441.
+- MCP gateway descriptions now stay stable across metadata-only refreshes and keep live counts behind `mcp({})`. Thanks to [@voidfreud](https://github.com/voidfreud) for PR #432.
+- Failed MCP servers in active backoff no longer remain advertised through cached direct tools, gateway list/search/describe results, or status tool counts. Thanks to [@voidfreud](https://github.com/voidfreud) for PR #434.
+- OAuth token invalidation now preserves credentials replaced by another Pi process instead of letting a stale refresh delete newly authorized shared credentials. Thanks to [@mjlbach](https://github.com/mjlbach) for PR #422.
+- Failed first-time MCP initialization no longer leaves the session permanently stuck with only `MCP not initialized`; the gateway keeps the failure reason and retries initialization on the next `mcp(...)` call. Thanks to [@hara-seihun](https://github.com/hara-seihun) for #428.
+- HTTP 202 and unauthenticated HTTP 401 endpoint probes now report ambiguous endpoint shape instead of claiming the URL is not MCP. Thanks to [@jayshah5696](https://github.com/jayshah5696) for #415.
+- Expanded `mcpScript` calls now show bounded submitted code. Thanks to [@DenisBalan](https://github.com/DenisBalan) for #413.
+- Gateway parameters nested inside `args` now fail with top-level guidance instead of dispatching inconsistently. Thanks to [@voidfreud](https://github.com/voidfreud) for PR #417.
+- Large direct-tool advisories now explain how to hide them with `settings.warnOnLargeDirectTools: false`. Thanks to [@afrodao2394](https://github.com/afrodao2394) for #412.
+- Namespace proxy tools now use valid cached metadata, include resource-only proxy servers, clean up only prior namespace registrations, follow `MCP_DIRECT_TOOLS` selection, and skip ambiguous normalized server names. Thanks to [@abdwhb-png](https://github.com/abdwhb-png) for PR #414.
+- Kept transient HTTP 503 connection failures as availability errors without multiplying gateway retries or misdiagnosing the endpoint as non-MCP. Thanks to [@elkaix](https://github.com/elkaix) for PR #411.
+- Preserved cached keep-alive catalogs during transient 503 refresh outages while deferred recovery continues with bounded backoff.
+- Startup connections that fail with a transient HTTP 503 now surface one quiet "temporarily unavailable; retry later" warning instead of the full hard failure; documented lifecycle behavior is unchanged, and keep-alive health checks continue their existing self-healing path. Thanks to [@elkaix](https://github.com/elkaix) for PR #424.
+
 ## [2.27.0] - 2026-08-20
 
 ### Highlights

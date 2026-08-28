@@ -25,8 +25,10 @@ import {
 	inspectStatefulLimitSettings,
 	inspectStatefulTransportSettings,
 	inspectSubagentSettings,
+	inspectUsageRecordingSettings,
 } from "./settings.js";
 import type { StatefulSubagentRuntimeStatus } from "./stateful.js";
+import type { UsageRecordingStatus } from "./usage-recording.js";
 import type { WorkItemLedgerSnapshot } from "./work-item-ledger.js";
 import { inspectSessionWorkflows } from "./work-item-persistence.js";
 
@@ -41,6 +43,7 @@ export interface SubagentInspectRuntime {
 	getConsultResourcePolicy(): "project-context" | "none" | "all";
 	getConsultationCwdPolicy(): ConsultationCwdPolicy;
 	getDelegationCwdPolicy(): DelegationCwdPolicy;
+	getUsageRecordingStatus?(): UsageRecordingStatus;
 	getRuntimeStatus(): StatefulSubagentRuntimeStatus;
 	listRunInspection(includeClosed?: boolean): AgentRunInspectionSummary[];
 	getRunInspection(agentId: string): AgentRunInspectionDetail | undefined;
@@ -344,6 +347,9 @@ function projectRunSummary(run: AgentRunInspectionSummary): Record<string, unkno
 		unreadMessages: run.unreadMessages,
 		turnGeneration: run.turnGeneration,
 		pendingCompletionCount: run.pendingCompletionCount,
+		...(run.pendingRequiredCompletionCount === undefined
+			? {}
+			: { pendingRequiredCompletionCount: run.pendingRequiredCompletionCount }),
 	};
 }
 
@@ -379,6 +385,9 @@ function projectRun(run: AgentRunInspectionDetail, ctx: ExtensionContext): Recor
 				}
 			: undefined,
 		resultFormat: run.resultFormat ?? "text",
+		completionRequirements: (run.completionRequirements ?? []).map((requirement) => ({
+			...requirement,
+		})),
 		structuredResult: run.structuredResult,
 		termination: run.termination,
 		outcome: run.outcome,
@@ -577,6 +586,8 @@ function projectStatus(runtime: SubagentInspectRuntime): Record<string, unknown>
 	const parallelLimit = inspectBlockingParallelLimitSettings();
 	const detachedLimits = inspectStatefulLimitSettings();
 	const transport = inspectStatefulTransportSettings();
+	const usageRecording = inspectUsageRecordingSettings();
+	const usageStatus = runtime.getUsageRecordingStatus?.();
 	const configuredDetachedLimits = detachedLimits.values
 		? Object.fromEntries(
 				Object.entries(detachedLimits.values).map(([field, snapshot]) => [field, snapshot.value]),
@@ -599,6 +610,16 @@ function projectStatus(runtime: SubagentInspectRuntime): Record<string, unknown>
 		configuredStatefulLimitSources: configuredDetachedLimitSources,
 		configuredCompletionDelivery: completion.value,
 		configuredCompletionDeliverySource: completion.source,
+		usageRecording: usageStatus
+			? {
+					enabled: usageStatus.enabled,
+					retentionDays: usageStatus.retentionDays,
+					recordedEvents: usageStatus.recordedEvents,
+					writeFailure: usageStatus.writeFailure,
+				}
+			: { enabled: false },
+		configuredUsageRecording: usageRecording.enabled,
+		configuredUsageRecordingSource: usageRecording.source,
 		maxParallelTasks: runtime.getMaxParallelTasks(),
 		configuredMaxParallelTasks: parallelLimit.value,
 		configuredMaxParallelTasksSource: parallelLimit.source,
@@ -619,7 +640,8 @@ function projectStatus(runtime: SubagentInspectRuntime): Record<string, unknown>
 			completion.error ||
 			parallelLimit.error ||
 			detachedLimits.error ||
-			transport.error
+			transport.error ||
+			usageRecording.error
 				? boundedPrivateText(
 						configured.error ??
 							resources.error ??
@@ -628,6 +650,7 @@ function projectStatus(runtime: SubagentInspectRuntime): Record<string, unknown>
 							parallelLimit.error ??
 							detachedLimits.error ??
 							transport.error ??
+							usageRecording.error ??
 							"",
 						2 * 1024,
 					)

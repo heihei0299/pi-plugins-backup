@@ -19,7 +19,7 @@ Permission enforcement extension for the [Pi](https://pi.mariozechner.at/) codin
 - **Gates MCP and skill access** at server, tool, and skill-name granularity
 - **Protects sensitive file patterns** — cross-cutting `path` rules deny `.env`, `~/.ssh/*`, etc. across all tools and bash at once, matching both the path as referenced and its symlink-resolved form so a deny cannot be evaded through a symlink alias
 - **Guards external paths** — prompts before file tools or bash commands reach outside `cwd`
-- **Fails closed** — an internal gate error blocks the tool (with a `gate_error` review-log entry and a matching `permissions:decision` broadcast), and an unparseable bash command — or an indirection wrapper that hides the gated command (`bash -c`/`eval`, `sudo`, `env`, `xargs`, `find -exec`, …) — prompts (`ask`) rather than passing silently
+- **Fails closed** — an internal gate error blocks the tool (with a `gate_error` review-log entry and a matching `permissions:decision` broadcast), and an unparseable bash command — or an indirection wrapper that hides the gated command (`bash -c`/`eval`, `sudo`, `env`, `xargs`, `find -exec`, …) — prompts (`ask`) rather than passing silently, unless the wrapped command is a pure reader whose direction is provable whatever it is fed (`xargs grep -l foo`)
 - **Forwards prompts from subagents** — `ask` policies work even in non-UI execution contexts
 - **Broadcasts UI prompt events** — `permissions:ui_prompt` fires only when the permission system is about to invoke the active user-facing permission UI, and every prompt it announces — including one forwarded up from a subagent — is answered by a `permissions:decision` on the same bus
 - **Native [`@gotgenes/pi-subagents`](https://github.com/gotgenes/pi-subagents) integration** — in-process child sessions register with the permission system automatically, enabling per-agent policy enforcement and `ask`-state forwarding to the parent UI without configuration
@@ -98,6 +98,24 @@ Four layers compose with most-restrictive-wins: `path` (cross-cutting) → `exte
 Because `ask` is more restrictive than `allow`, a `path` allow cannot loosen an `external_directory: ask` boundary — allow outside-CWD directories on `external_directory`.
 See [docs/configuration.md](docs/configuration.md) for the full recipe.
 
+Both path surfaces also carry a **direction**, so you can permit reading somewhere without permitting writing there: `path_read`, `path_write`, `external_directory_read`, and `external_directory_write`.
+A bare `path` or `external_directory` key is sugar that expands into both of its directional keys, so every existing config keeps its exact meaning and remains the right spelling whenever direction does not matter.
+
+```jsonc
+{
+  "permission": {
+    "external_directory": { "*": "ask" },
+    "external_directory_read": { "~/dev/*": "allow" }
+  }
+}
+```
+
+Here a `read` under `~/dev` is silent while a `write` or `edit` to the same path still prompts.
+The useful grants are `*_read: allow` and the bare key; `*_write` earns its keep as a restriction (`path_write: { "*": "deny" }` is a read-only-agent posture) — see [docs/configuration.md](docs/configuration.md#directional-path-surfaces).
+
+A read grant reaches bash commands too, not just the file tools: a redirect operator proves its destination's direction (`> out.txt` writes, `< in.txt` reads), and a frozen set of read-only command words — `cat`, `grep`, `ls`, `find`, and 17 others — proves a read for the paths they name.
+A token nothing proves still consults both directions, so an unrecognized command is never treated as the safer one.
+
 ## Configuration
 
 Config lives in one JSON file per scope:
@@ -115,7 +133,7 @@ Within a surface map like `bash` or `mcp`, **last matching rule wins** — put b
 The optional `shellTools` field records which non-`bash` tools carry shell semantics (e.g. an `exec_command` tool that replaces native `bash`), so they are gated at full parity with native `bash` — see [docs/configuration.md](docs/configuration.md#shelltools--gating-aliased-shell-tools).
 
 The optional `authorizerChain` field names registered case-by-case decision links (e.g. a light model judge) to consult when a request lands on `ask`, ahead of the interactive prompt.
-A downstream extension registers a link via `getPermissionsService(sessionId).registerAuthorizer(name, authorize)`; it decides nothing until you name it here (opt-in), config order fixes the chain order, and the chain owner caps any link's `allow` on `external_directory`/`path` to keep it within your policy — see [docs/configuration.md](docs/configuration.md#authorizer-chain--case-by-case-decision-links).
+A downstream extension registers a link via `getPermissionsService(sessionId).registerAuthorizer(name, authorize)`; it decides nothing until you name it here (opt-in), config order fixes the chain order, and the chain owner caps any link's `allow` on the `external_directory`/`path` surface families to keep it within your policy — see [docs/configuration.md](docs/configuration.md#authorizer-chain--case-by-case-decision-links).
 A subagent's ask is reviewed by the chain of the session serving it, one hop up, rather than inside the subagent — see the same section.
 [`@gotgenes/pi-permission-model-judge`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-model-judge) is a first-party reference implementation of such a link — a deny-first reviewer that auto-denies mistyped out-of-directory paths.
 

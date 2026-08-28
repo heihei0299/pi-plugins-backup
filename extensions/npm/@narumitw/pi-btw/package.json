@@ -1,6 +1,6 @@
 {
 	"name": "@narumitw/pi-btw",
-	"version": "0.55.1",
+	"version": "0.55.4",
 	"description": "Pi extension that adds a /btw side-question command.",
 	"type": "module",
 	"license": "MIT",
@@ -34,10 +34,10 @@
 		"prepack": "npm run build"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.9",
-		"@earendil-works/pi-ai": "0.84.2",
-		"@earendil-works/pi-coding-agent": "0.84.2",
-		"@earendil-works/pi-tui": "0.84.2",
+		"@biomejs/biome": "2.5.10",
+		"@earendil-works/pi-ai": "0.84.3",
+		"@earendil-works/pi-coding-agent": "0.84.3",
+		"@earendil-works/pi-tui": "0.84.3",
 		"esbuild": "0.28.2",
 		"typescript": "7.0.2"
 	},
@@ -47,7 +47,7 @@
 		"directory": "packages/pi-btw"
 	},
 	"dependencies": {
-		"@narumitw/pi-tui-kit": "^0.57.0"
+		"@narumitw/pi-tui-kit": "^0.59.0"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",

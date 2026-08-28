@@ -1,4 +1,3 @@
-import { Markdown, Text } from "@earendil-works/pi-tui";
 import type {
   ExtensionAPI,
   ToolDefinition,
@@ -8,13 +7,12 @@ import { Type } from "typebox";
 import { constants } from "fs";
 import {
   genDiff,
-  restoreEndings,
   type LineEnding,
 } from "./replace-diff";
-import { readNormFile, safeSnapId } from "./file-reader";
+import { readNormFile, type NormFile } from "./file-reader";
 import { normReq } from "./replace-normalize";
 import { isRec, rejectUnknownFields, abortIf, makePrepareArguments } from "./utils";
-import { resolveTarget, writeAtomic } from "./fs-write";
+import { resolveTarget } from "./fs-write";
 import { applyEdit,
   lineHashes,
   resEdit,
@@ -26,28 +24,18 @@ import { applyEdit,
   type NEdit,
 } from "./hashline";
 import { toCwd } from "./paths";
+import type { RMetrics } from "./replace-response";
 import {
-  buildChanged,
-  buildNoop,
-  type RMeta,
-  type RMetrics,
-} from "./replace-response";
-import {
-  buildAppliedText,
-  mkMdTheme,
-  fmtCall,
-  fmtResultMd,
-  getPreviewInput,
-  getResultText,
-  isApplied,
+  makeRenderCall,
+  renderEditResult,
   type RPreview,
   type RRState,
 } from "./replace-render";
 import { loadP, loadGuide } from "./prompts";
-import { saveUndo } from "./replace-undo";
-import { loadHashStore, findSnapshotPaths, type HashStore } from "./hash-store";
-import { getServed, recordServedSafe, recordServedDiffSafe } from "./served";
+import { loadHashStore, findSnapshotPaths, findServedPaths, type HashStore } from "./hash-store";
+import { getServed, recordServedSafe } from "./served";
 import { noopPayloadKey, markBoundaryNoop, consumeBoundaryBypass, clearBoundaryBypass } from "./boundary-bypass";
+import { commitEdit } from "./commit";
 
 const replacementLinesSchema = Type.Array(
   Type.String({
@@ -61,11 +49,11 @@ const replacementLinesSchema = Type.Array(
 );
 
 const removeFromSchema = Type.String({
-  description: "Bare 3-char HASH only (e.g. \"aB3\"): copy just the hash from the leftmost column of a read row like `aB3│content`; never the line content. Marks the FIRST line to remove (inclusive)",
+  description: "Bare 3-char anchor only (e.g. \"aB3\"): copy just the anchor from the leftmost column of a read row like `aB3│content`; never the line content. Marks the FIRST line to remove (inclusive)",
 });
 
 const removeToSchema = Type.String({
-  description: "Bare 3-char HASH only (e.g. \"aB3\"): copy just the hash from the leftmost column of a read row like `aB3│content`; never the line content. Marks the LAST line to remove (inclusive)",
+  description: "Bare 3-char anchor only (e.g. \"aB3\"): copy just the anchor from the leftmost column of a read row like `aB3│content`; never the line content. Marks the LAST line to remove (inclusive)",
 });
 
 export const editToolSchema = Type.Object(
@@ -87,13 +75,14 @@ export type ReqParams = {
 export type ReplaceDetails = {
   diff: string;
   patch?: string;
+  patchTruncated?: boolean;
   firstChangedLine?: number;
   snapshotId?: string;
   classification?: "noop";
   metrics?: RMetrics;
 };
 
-interface PipelineResult {
+export interface PipelineResult {
   path: string;
   originalNormalized: string;
   result: string;
@@ -111,8 +100,6 @@ interface PipelineResult {
   hadBoundaryDedup: boolean;
   boundaryRemovedLines: number;
 }
-
-const PREVIEW_DEBOUNCE_MS = 150;
 
 const ROOT_KS = new Set(["path", "remove_from", "remove_to", "replacement_lines"]);
 
@@ -162,7 +149,7 @@ async function resolveMissingPath(
   } catch {
     return undefined;
   }
-  const matches = findSnapshotPaths(store, hashes);
+  const matches = [...new Set([...findSnapshotPaths(store, hashes), ...findServedPaths(store, hashes)])];
   if (matches.length === 1) {
     return {
       path: matches[0]!,
@@ -183,6 +170,7 @@ export interface ExecPipelineOptions {
   store?: HashStore;
   noPersist?: boolean;
   skipBoundaryDedup?: boolean;
+  preloadedNorm?: NormFile;
 }
 
 function collectRemovedHashes(
@@ -243,7 +231,7 @@ export async function execPipeline(
 
   const hashStore = options?.store ?? await loadHashStore();
   const { normalized: originalNormalized, bom, originalEnding, fileHashes: originalHashes, hadUtf8DecodeErrors, absolutePath } = await readNormFile(
-    path, cwd, { signal: options?.signal, accessMode: options?.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: options?.noPersist },
+    path, cwd, { signal: options?.signal, accessMode: options?.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: options?.noPersist, preloadedNorm: options?.preloadedNorm },
   );
 
   const served = await getServed(hashStore, absolutePath);
@@ -338,21 +326,6 @@ type ToolDef = ToolDefinition<
   RRState
 > & { renderShell?: "default" | "self" };
 
-export function reuseText(context: any, content: string): Text {
-  const t = context.lastComponent instanceof Text
-    ? context.lastComponent
-    : new Text("", 0, 0);
-  t.setText(content);
-  return t;
-}
-
-export function reuseMarkdown(context: any, content: string, theme: any): Markdown {
-  const m = context.lastComponent instanceof Markdown
-    ? context.lastComponent
-    : new Markdown("", 0, 0, mkMdTheme(theme));
-  m.setText(content);
-  return m;
-}
 
 export function buildToolDef(): ToolDef {
   const E_DESC = loadP("../prompts/replace.md");
@@ -369,107 +342,17 @@ export function buildToolDef(): ToolDef {
     promptGuidelines: E_GUIDE,
     prepareArguments: makePrepareArguments(),
     renderShell: "default",
-    renderCall(args, theme, context) {
-      const previewInput = getPreviewInput(args);
-      const cancelPendingPreview = () => {
-        if (context.state.previewTimer) {
-          clearTimeout(context.state.previewTimer);
-          context.state.previewTimer = undefined;
-        }
-      };
-      if (context.executionStarted) {
-        cancelPendingPreview();
-        context.state.argsKey = undefined;
-        context.state.preview = undefined;
-        context.state.previewGeneration =
-          (context.state.previewGeneration ?? 0) + 1;
-      } else if (!context.argsComplete || !previewInput) {
-        cancelPendingPreview();
-        context.state.argsKey = undefined;
-        context.state.preview = undefined;
-        context.state.previewGeneration =
-          (context.state.previewGeneration ?? 0) + 1;
-      } else {
-        const argsKey = JSON.stringify(previewInput);
-        if (context.state.argsKey !== argsKey) {
-          cancelPendingPreview();
-          context.state.argsKey = argsKey;
-          context.state.preview = undefined;
-          const previewGeneration = (context.state.previewGeneration ?? 0) + 1;
-          context.state.previewGeneration = previewGeneration;
-          context.state.previewTimer = setTimeout(() => {
-            context.state.previewTimer = undefined;
-            compPreview(args, context.cwd)
-              .then((preview) => {
-                if (
-                  context.state.argsKey === argsKey &&
-                  context.state.previewGeneration === previewGeneration
-                ) {
-                  context.state.preview = preview;
-                  context.invalidate();
-                }
-              })
-              .catch((err: unknown) => {
-                if (
-                  context.state.argsKey === argsKey &&
-                  context.state.previewGeneration === previewGeneration
-                ) {
-                  context.state.preview = {
-                    error: err instanceof Error ? err.message : String(err),
-                  };
-                  context.invalidate();
-                }
-              });
-          }, PREVIEW_DEBOUNCE_MS);
-        }
-      }
-      const text =
-        (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-      text.setText(
-        fmtCall(
-          getPreviewInput(args) ?? undefined,
-          context.state as RRState,
-          context.expanded,
-          theme,
-        ),
-      );
-      return text;
-    },
-
+    renderCall: makeRenderCall(compPreview),
     renderResult(result, { isPartial }, theme, context) {
-      if (isPartial) {
-        return reuseText(context, theme.fg("warning", "Editing..."));
-      }
-
-      const typedResult = result as {
-        content?: Array<{ type: string; text?: string }>;
-        details?: ReplaceDetails;
-      };
-      const renderedText = getResultText(typedResult);
-
-      const renderState = context.state as RRState | undefined;
-      if (renderState) {
-        if (renderState.previewTimer) {
-          clearTimeout(renderState.previewTimer);
-          renderState.previewTimer = undefined;
-        }
-        renderState.preview = undefined;
-        renderState.previewGeneration = (renderState.previewGeneration ?? 0) + 1;
-      }
-
-      if (context.isError) {
-        return renderedText
-          ? reuseText(context, `\n${theme.fg("error", renderedText)}`)
-          : new Text("", 0, 0);
-      }
-
-      if (isApplied(typedResult.details)) {
-        const appliedText = buildAppliedText(renderedText, typedResult.details, theme);
-        return appliedText ? reuseText(context, appliedText) : new Text("", 0, 0);
-      }
-
-      if (!renderedText) return new Text("", 0, 0);
-      return reuseMarkdown(context, fmtResultMd(renderedText), theme);
+      return renderEditResult(
+        result as {
+          content?: Array<{ type: string; text?: string }>;
+          details?: ReplaceDetails;
+        },
+        isPartial,
+        theme,
+        context,
+      );
     },
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -488,113 +371,24 @@ export function buildToolDef(): ToolDef {
       const boundaryBypass = consumeBoundaryBypass(mutationTargetPath, noopPayload);
       return withFileMutationQueue(mutationTargetPath, async () => {
         abortIf(signal);
-
-        const {
-          originalNormalized,
-          originalHashes,
-          result,
-          bom,
-          originalEnding,
-          hadUtf8DecodeErrors,
-          warnings,
-          noopEdit,
-          firstChangedLine,
-          lastChangedLine,
-          resultHashes,
-          hadBoundaryDedup,
-          boundaryRemovedLines,
-          totalAddedLines,
-          totalRemovedLines,
-        } = await execPipeline(
+        const pipe = await execPipeline(
           normalizedParams,
           ctx.cwd,
           { accessMode: constants.R_OK | constants.W_OK, signal, skipBoundaryDedup: boundaryBypass },
         );
-
-        if (resolution) {
-          warnings.unshift(resolution.warning);
-        }
-        if (boundaryBypass && originalNormalized !== result) {
-          warnings.push("[E_BOUNDARY_BYPASS] Boundary dedup was off for this call and is back on.");
-        }
-
-        const editsAttempted = 1;
-        if (originalNormalized === result) {
-          const noopSnapshotId = await safeSnapId(absolutePath, "noop edit");
-          if (hadBoundaryDedup) {
-            markBoundaryNoop(mutationTargetPath, noopPayload);
-          }
-          return buildNoop({
-            path,
-            noopEdit,
-            snapshotId: noopSnapshotId,
-            editMeta: {
-              editsAttempted,
-              noopEditsCount: noopEdit ? 1 : 0,
-              addedLines: 0,
-              removedLines: 0,
-            },
-            warnings,
-            boundaryRemovedLines,
-          });
-        }
-
-        if (hadUtf8DecodeErrors) {
-          warnings.push(
-            "Non-UTF-8 bytes were shown as U+FFFD; this edit rewrote the file as UTF-8.",
-          );
-        }
-
-        abortIf(signal);
-        const undo = await saveUndo(mutationTargetPath, {
-          content: originalNormalized,
-          bom,
-          originalEnding,
-          hashes: originalHashes,
-          resultContent: result,
-        });
-        if (!undo.persisted) {
-          throw new Error(
-            `[E_UNDO_UNAVAILABLE] Could not persist undo history; the edit was not applied and ${path} is unchanged.`
-          );
-        }
-        try {
-          abortIf(signal);
-          await writeAtomic(
-            absolutePath,
-            bom + restoreEndings(result, originalEnding),
-          );
-        } catch (error) {
-          await undo.restore();
-          throw error;
-        }
-        clearBoundaryBypass(mutationTargetPath);
-        const updatedSnapshotId = await safeSnapId(absolutePath, "post-edit");
-
-        const editMeta: RMeta = {
-          editsAttempted,
-          noopEditsCount: noopEdit ? 1 : 0,
-          firstChangedLine,
-          lastChangedLine,
-          addedLines: totalAddedLines,
-          removedLines: totalRemovedLines,
-        };
-
-        const successInput = {
+        const appliedWarnings = boundaryBypass
+          ? ["[E_BOUNDARY_BYPASS] Boundary dedup was off for this call and is back on."]
+          : [];
+        return commitEdit(pipe, {
           path,
-          originalNormalized,
-          originalHashes,
-          result,
-          resultHashes,
-          warnings,
-          snapshotId: updatedSnapshotId,
-          editMeta,
-        };
-        const changed = buildChanged(successInput);
-        if (changed.details.diff) {
-          await recordServedDiffSafe(mutationTargetPath, changed.details.diff, "post-edit diff", new Set(resultHashes));
-        }
-        return changed;
+          absolutePath,
+          mutationTargetPath,
+          signal,
+          prefixWarnings: resolution ? [resolution.warning] : [],
+          appliedWarnings,
+          onApplied: () => clearBoundaryBypass(mutationTargetPath),
+          onNoopDedup: () => markBoundaryNoop(mutationTargetPath, noopPayload),
+        });
       });
     },
   };

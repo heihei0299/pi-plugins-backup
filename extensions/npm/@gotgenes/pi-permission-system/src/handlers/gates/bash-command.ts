@@ -2,8 +2,8 @@ import type {
   BashCommand,
   WrapperKind,
 } from "#src/access-intent/bash/command-enumeration";
-import { pickMostRestrictive } from "#src/handlers/gates/candidate-check";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
+import { pickMostRestrictive } from "#src/restrictiveness";
 import type { PermissionCheckResult } from "#src/types";
 
 /**
@@ -60,9 +60,9 @@ export function resolveBashCommandCheck(
 ): PermissionCheckResult {
   if (commands.length === 0) {
     if (isTriviallyEmptyCommand(command)) {
-      return resolveWholeCommand(command, agentName, resolver);
+      return resolveOnBashSurface(command, agentName, resolver);
     }
-    const whole = resolveWholeCommand(command, agentName, resolver);
+    const whole = resolveOnBashSurface(command, agentName, resolver);
     if (whole.state === "deny") {
       return whole;
     }
@@ -77,19 +77,10 @@ export function resolveBashCommandCheck(
   }
 
   const results = commands.map((cmd) => {
-    const base = resolver.resolve({
-      kind: "tool",
-      surface: "bash",
-      input: { command: cmd.text },
-      agentName,
-    });
+    const base = resolveOnBashSurface(cmd.text, agentName, resolver);
     const floored =
       cmd.wrapperKind && base.state === "allow"
-        ? {
-            ...base,
-            state: "ask" as const,
-            matchedPattern: WRAPPER_SENTINEL[cmd.wrapperKind],
-          }
+        ? resolveWrapperUnit(cmd, cmd.wrapperKind, base, agentName, resolver)
         : base;
     const result = cmd.context
       ? { ...floored, commandContext: cmd.context }
@@ -100,8 +91,47 @@ export function resolveBashCommandCheck(
   });
   return (
     pickMostRestrictive(results) ??
-    resolveWholeCommand(command, agentName, resolver)
+    resolveOnBashSurface(command, agentName, resolver)
   );
+}
+
+/**
+ * Resolve a wrapper unit whose own text resolved to `allow`.
+ *
+ * A wrapper hides or indirects the command that should be gated, so its `allow`
+ * is clamped up to a synthetic `ask` naming the kind that caused it — unless
+ * the enumerator established that the floor has no reason left to hold, in
+ * which case the unit is resolved by the rules of the command it runs (ADR 0013
+ * §11, #803).
+ *
+ * Only an `allow` reaches here, which is what makes the exemption unable to
+ * weaken anything: an explicit `deny` or `ask` on the wrapper is decided before
+ * this function is consulted, and no inner rule is read at all.
+ */
+function resolveWrapperUnit(
+  cmd: BashCommand,
+  wrapperKind: WrapperKind,
+  base: PermissionCheckResult,
+  agentName: string | undefined,
+  resolver: ScopedPermissionResolver,
+): PermissionCheckResult {
+  const inner = cmd.floorExemption && cmd.executedUnit;
+  if (!inner) {
+    return {
+      ...base,
+      state: "ask",
+      matchedPattern: WRAPPER_SENTINEL[wrapperKind],
+    };
+  }
+  // The inner command's rule decides, but the unit is still what runs: the
+  // prompt, the decision value, and the session-approval suggestion all read
+  // `command`, and naming a fragment of the command line there would offer a
+  // grant that does not cover what the user is looking at.
+  return {
+    ...resolveOnBashSurface(inner, agentName, resolver),
+    command: base.command,
+    floorExemption: cmd.floorExemption,
+  };
 }
 
 /**
@@ -118,8 +148,14 @@ function isTriviallyEmptyCommand(command: string): boolean {
   return lines.every((line) => line.startsWith("#"));
 }
 
-/** Resolve the whole command string as a single unit on the `bash` surface. */
-function resolveWholeCommand(
+/**
+ * Resolve one command string against the `bash` surface's rules.
+ *
+ * Three callers share it: each command unit of the chain, the whole command
+ * when the chain yields no units, and the inner command of a wrapper the floor
+ * no longer covers.
+ */
+function resolveOnBashSurface(
   command: string,
   agentName: string | undefined,
   resolver: ScopedPermissionResolver,

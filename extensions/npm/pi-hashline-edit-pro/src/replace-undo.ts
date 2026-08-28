@@ -85,13 +85,13 @@ export async function clearUndo(path: string): Promise<void> {
   }
 }
 
-export function regReplaceUndo(pi: ExtensionAPI): void {
+export function regUndo(pi: ExtensionAPI): void {
   pi.registerTool({
-    name: "undo_last_replace",
-    label: "Undo Last Replace",
-    description: loadP("../prompts/undo-last-replace.md"),
-    promptSnippet: loadP("../prompts/undo-last-replace-snippet.md"),
-    promptGuidelines: loadGuide("../prompts/undo-last-replace-guidelines.md"),
+    name: "undo_last_change",
+    label: "Undo Last Change",
+    description: loadP("../prompts/undo-last-change.md"),
+    promptSnippet: loadP("../prompts/undo-last-change-snippet.md"),
+    promptGuidelines: loadGuide("../prompts/undo-last-change-guidelines.md"),
     prepareArguments: makePrepareArguments(),
     parameters: Type.Object({
       path: Type.String({
@@ -126,46 +126,34 @@ export function regReplaceUndo(pi: ExtensionAPI): void {
           if (errCode(error) !== "ENOENT") throw error;
         }
 
-        if (currentRaw === undefined) {
-          await clearUndo(mutationTargetPath);
+        if (
+          currentRaw !== undefined &&
+          currentRaw !== undo.bom + restoreEndings(undo.resultContent, undo.originalEnding)
+        ) {
           return {
             content: [
               {
                 type: "text",
-                text: `[E_UNDO_STALE] Cannot undo last replace on ${path}: the file no longer exists.`
+                text: `[E_UNDO_STALE] Cannot undo last change on ${path}: the file changed after the edit. The undo record is kept; once the file matches the edited state again, undo_last_change will succeed. Call read() to inspect the current state.`
               },
             ],
             isError: true,
             details: {},
           };
         }
-        if (currentRaw !== undo.bom + restoreEndings(undo.resultContent, undo.originalEnding)) {
-          await clearUndo(mutationTargetPath);
-          return {
-            content: [
-              {
-                type: "text",
-                text: `[E_UNDO_STALE] Cannot undo last replace on ${path}: the file changed after the replace. Call read() to inspect the current state.`
-              },
-            ],
-            isError: true,
-            details: {},
-          };
-        }
-
-        const { text: currentStripped } = stripBOM(currentRaw);
-        const currentNormalized = toLF(currentStripped);
-        const currentHashes = await lineHashes(currentNormalized, mutationTargetPath);
-        const diffResult = genDiff(undo.content, currentNormalized, 0, undefined, undo.hashes);
-        const linesAddedByReplace = cntDiff(diffResult.diff, "+");
-        const linesRemovedByReplace = cntDiff(diffResult.diff, "-");
-        const restoredRange = changedRange(currentNormalized, undo.content);
-        const undoDiff = genDiff(currentNormalized, undo.content, 1, undo.hashes, currentHashes).diff;
 
         await writeAtomic(
           mutationTargetPath,
           undo.bom + restoreEndings(undo.content, undo.originalEnding),
         );
+
+        const currentNormalized = currentRaw === undefined ? "" : toLF(stripBOM(currentRaw).text);
+        const currentHashes = await lineHashes(currentNormalized, mutationTargetPath);
+        const diffResult = genDiff(undo.content, undo.resultContent, 0, undefined, undo.hashes, { unlimited: true });
+        const linesAddedByReplace = cntDiff(diffResult.diff, "+");
+        const linesRemovedByReplace = cntDiff(diffResult.diff, "-");
+        const restoredRange = changedRange(currentNormalized, undo.content);
+        const undoDiff = genDiff(currentNormalized, undo.content, 1, undo.hashes, currentHashes).diff;
 
         try {
           const store = await loadHashStore();
@@ -178,8 +166,11 @@ export function regReplaceUndo(pi: ExtensionAPI): void {
         await clearUndo(mutationTargetPath);
 
         const parts: string[] = [
-          `Undone last replace on ${path}.`,
+          `Undone last change on ${path}.`,
         ];
+        if (currentRaw === undefined) {
+          parts.push("The file was deleted; restored it from undo history.");
+        }
         if (linesAddedByReplace > 0 || linesRemovedByReplace > 0) {
           parts.push(
             `Removed ${linesAddedByReplace} line(s), restored ${linesRemovedByReplace} line(s).`,
@@ -189,6 +180,7 @@ export function regReplaceUndo(pi: ExtensionAPI): void {
           "Call read for fresh anchors.",
         );
 
+        const patchResult = genPatch(path, currentNormalized, undo.content);
         return {
           content: [
             {
@@ -198,7 +190,8 @@ export function regReplaceUndo(pi: ExtensionAPI): void {
           ],
           details: {
             diff: undoDiff,
-            patch: genPatch(path, currentNormalized, undo.content),
+            patch: patchResult.patch,
+            ...(patchResult.truncated ? { patchTruncated: true as const } : {}),
             metrics: buildMetrics({
               classification: "applied",
               editsAttempted: 1,

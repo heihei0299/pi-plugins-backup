@@ -8,6 +8,13 @@ import {
 } from "./accounting.js";
 import { formatError, notifyTerminal, safeGoalMenuText, truncateNotification } from "./errors.js";
 import {
+	createGoalContextContract,
+	createInactiveGoalContextContract,
+	hasGoalContextContract,
+	hasGoalContextContractHistory,
+	hasInactiveGoalContextContract,
+} from "./goal-contract.js";
+import {
 	appendGoalPromptMarker,
 	extractContinuationMarker,
 	extractGoalPromptMarker,
@@ -29,7 +36,7 @@ import {
 	type GoalSettings,
 	type GoalSettingsLoadIssue,
 } from "./settings.js";
-import { GoalToolPolicy, type GoalToolVisibilitySnapshot } from "./tool-policy.js";
+import { assertGoalToolsAvailable, goalToolsAvailable } from "./tool-policy.js";
 import { type GoalWait, GoalWaitTimer } from "./wait.js";
 import { WorkflowMutex, type WorkflowMutexOwner } from "./workflow-mutex.js";
 
@@ -167,7 +174,6 @@ export interface GoalSettingsRuntimeSnapshot {
 	staleGoalToolCallsBlocked: boolean;
 	cancelledContinuationMarkers: Array<[string, string]>;
 	terminalDetails?: GoalTerminalDetails;
-	toolVisibility: GoalToolVisibilitySnapshot;
 }
 
 interface PendingGoalPrompt {
@@ -198,7 +204,7 @@ const CONTRADICTORY_COMPLETION_PATTERNS = [
 // and the cross-cutting invariants used by command and lifecycle orchestration.
 // Keep this state machine cohesive despite its size: prompt ownership, continuation,
 // budget, safety, external-wait, and queue transitions share ordering-sensitive invariants.
-// Tool visibility and generic wait-timer mechanics are delegated to focused collaborators.
+// Tool availability and generic wait-timer mechanics are delegated to focused collaborators.
 // Cohesion justification: Goal transitions, continuation and wait ownership, queue state, and
 // budget/retry recovery share one generation-guarded runtime; separating them further would
 // duplicate stale-turn, timer, and persistence invariants across modules.
@@ -230,7 +236,6 @@ export class GoalRuntime {
 	agentRunToolAttempted = false;
 	guardAbortGoalId?: string;
 	staleGoalToolCallsBlocked = false;
-	readonly toolPolicy: GoalToolPolicy;
 	private readonly workflowMutex: WorkflowMutex;
 	private workflowOwner?: WorkflowMutexOwner;
 	private workflowSession?: object;
@@ -248,7 +253,14 @@ export class GoalRuntime {
 	constructor(pi: ExtensionAPI) {
 		this.pi = pi;
 		this.workflowMutex = new WorkflowMutex(pi);
-		this.toolPolicy = new GoalToolPolicy(pi);
+	}
+
+	goalToolsAvailable() {
+		return goalToolsAvailable(this.pi);
+	}
+
+	assertGoalToolsAvailable() {
+		assertGoalToolsAvailable(this.pi);
 	}
 
 	bindWorkflowSession(session: object) {
@@ -283,31 +295,6 @@ export class GoalRuntime {
 		const owner = this.workflowOwner;
 		this.workflowMutex.release(owner);
 		if (!this.workflowMutex.isOwner(owner)) this.workflowOwner = undefined;
-	}
-
-	beginTemporaryWorkflowAccess(session?: unknown) {
-		if (session && typeof session === "object" && this.workflowSession !== session) {
-			this.bindWorkflowSession(session);
-		}
-		const alreadyOwned = this.workflowMutex.isOwner(this.workflowOwner);
-		if (!alreadyOwned && !this.acquireWorkflow()) return undefined;
-		let released = false;
-		return () => {
-			if (released) return;
-			released = true;
-			if (!alreadyOwned) this.releaseWorkflow();
-		};
-	}
-
-	withTemporaryWorkflowAccess(action: () => void, session?: unknown) {
-		const release = this.beginTemporaryWorkflowAccess(session);
-		if (!release) return false;
-		try {
-			action();
-			return true;
-		} finally {
-			release();
-		}
 	}
 
 	hasLegacyQueueInterface() {
@@ -427,7 +414,7 @@ export class GoalRuntime {
 			return false;
 		}
 		if (!intent) return false;
-		if (this.activeGoal?.status === "active" && !this.toolPolicy.toolsAvailable()) {
+		if (this.activeGoal?.status === "active" && !this.goalToolsAvailable()) {
 			this.pauseGoalForUnavailableTools(ctx);
 			return false;
 		}
@@ -695,6 +682,7 @@ export class GoalRuntime {
 		if (terminalReason !== undefined) this.setTerminalReason(this.activeGoal.id, terminalReason);
 		const stoppedGoal = this.activeGoal;
 		this.persistGoal(stoppedGoal);
+		if (request.kind !== "blocker_report") this.ensureInactiveGoalContextContract(ctx);
 		if (this.activeGoal?.id === stoppedGoal.id && this.activeGoal.status === stoppedGoal.status) {
 			this.updateStatus(ctx, stoppedGoal);
 			this.releaseWorkflow();
@@ -893,8 +881,22 @@ export class GoalRuntime {
 		if (!recovery) return false;
 		this.goalRecovery = undefined;
 		const goal = this.activeGoal;
-		if (goal?.id !== recovery.goalId || goal.status !== "active") return false;
+		if (goal?.id !== recovery.goalId || goal.status !== "active" || !this.ownsWorkflow(goal)) {
+			return false;
+		}
 		const details = recovery.errorMessage ? `: ${truncateNotification(recovery.errorMessage)}` : "";
+		if (recovery.kind === "provider_retry") {
+			const waitingGoal = this.enterGoalWait(ctx, goal.id, {
+				reason: `Provider retries exhausted${details}`,
+			});
+			if (!waitingGoal) return false;
+			notifyTerminal(
+				ctx.ui,
+				`Goal waiting after provider retries were exhausted${details}. Send a follow-up or run /goal resume to retry.`,
+				"warning",
+			);
+			return true;
+		}
 		const stoppedGoal = this.stopActiveGoal(ctx, {
 			kind: "retry_exhausted",
 			expectedGoalId: goal.id,
@@ -944,6 +946,37 @@ export class GoalRuntime {
 		this.claimedGoalPromptMarkers.clear();
 		this.cancelledGoalPromptMarkers.clear();
 		this.pendingNonGoalInputs = [];
+	}
+
+	ensureGoalContextContract(ctx: StatusContext, goal: ActiveGoal) {
+		const contract = this.goalContextContractForPrompt(ctx, goal);
+		if (contract) this.pi.sendMessage(contract, { triggerTurn: false });
+	}
+
+	ensureInactiveGoalContextContract(ctx: StatusContext) {
+		const contract = this.goalContextContractForPrompt(ctx);
+		if (contract) this.pi.sendMessage(contract, { triggerTurn: false });
+	}
+
+	goalContextContractForPrompt(ctx: StatusContext, goal?: ActiveGoal) {
+		const { contextEntries, historyEntries } = goalContractEntries(ctx);
+		if (goal) {
+			return hasGoalContextContract(contextEntries, goal)
+				? undefined
+				: createGoalContextContract(goal);
+		}
+		const hasHistory =
+			hasGoalContextContractHistory(contextEntries) ||
+			hasGoalContextContractHistory(historyEntries);
+		if (!hasHistory || hasInactiveGoalContextContract(contextEntries)) return undefined;
+		return createInactiveGoalContextContract();
+	}
+
+	hasGoalContextContractHistory(ctx: StatusContext) {
+		const { contextEntries, historyEntries } = goalContractEntries(ctx);
+		return (
+			hasGoalContextContractHistory(contextEntries) || hasGoalContextContractHistory(historyEntries)
+		);
 	}
 
 	async sendOwnedGoalPrompt(
@@ -1201,6 +1234,15 @@ export class GoalRuntime {
 	}
 
 	clearActiveGoal(ctx: StatusContext, reason = "goal cleared", releaseWorkflow = true) {
+		this.clearActiveGoalState(ctx, reason, releaseWorkflow);
+		this.ensureInactiveGoalContextContract(ctx);
+	}
+
+	clearCompletedGoal(ctx: StatusContext) {
+		this.clearActiveGoalState(ctx, "goal cleared", true);
+	}
+
+	private clearActiveGoalState(ctx: StatusContext, reason: string, releaseWorkflow: boolean) {
 		const clearedGoal = this.activeGoal;
 		this.clearGoalWaitTimer();
 		this.cancelContinuationWork();
@@ -1212,8 +1254,6 @@ export class GoalRuntime {
 		this.clearPersistedGoal(ctx.cwd, clearedGoal, reason);
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		if (releaseWorkflow) this.releaseWorkflow();
-		// Do not relock toolPolicy: after first activation, keep tools visible for the
-		// rest of this extension runtime to avoid repeated tool-schema churn.
 	}
 
 	snapshotSettingsApplicationState(): GoalSettingsRuntimeSnapshot {
@@ -1234,7 +1274,6 @@ export class GoalRuntime {
 			staleGoalToolCallsBlocked: this.staleGoalToolCallsBlocked,
 			cancelledContinuationMarkers: [...this.cancelledContinuationMarkers],
 			terminalDetails: this.terminalDetails ? structuredClone(this.terminalDetails) : undefined,
-			toolVisibility: this.toolPolicy.snapshot(),
 		};
 	}
 
@@ -1262,7 +1301,6 @@ export class GoalRuntime {
 		this.terminalDetails = snapshot.terminalDetails
 			? structuredClone(snapshot.terminalDetails)
 			: undefined;
-		this.toolPolicy.restore(snapshot.toolVisibility);
 	}
 
 	pauseGoalForUnavailableTools(ctx: StatusContext, abortTurn = true, recordUsage = true) {
@@ -1539,6 +1577,25 @@ function inputFingerprint(prompt: unknown) {
 	return createHash("sha256")
 		.update(typeof prompt === "string" ? prompt : "", "utf8")
 		.digest("hex");
+}
+
+function goalContractEntries(ctx: StatusContext) {
+	const sessionManager = ctx.sessionManager as
+		| {
+				buildContextEntries?: () => unknown[];
+				buildSessionContext?: () => { messages?: unknown[] };
+				getBranch?: () => unknown[];
+				getEntries?: () => unknown[];
+		  }
+		| undefined;
+	const historyEntries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+	return {
+		contextEntries:
+			sessionManager?.buildSessionContext?.().messages ??
+			sessionManager?.buildContextEntries?.() ??
+			historyEntries,
+		historyEntries,
+	};
 }
 
 async function sendPrompt(
