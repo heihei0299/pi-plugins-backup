@@ -1,21 +1,24 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatSize, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readdir, stat } from "fs/promises";
+import { stat } from "fs/promises";
 import { dirname, join, relative } from "path";
-import { loadFileKindAndText } from "./file-kind";
-import { readNormFile } from "./file-reader";
+import { spawn, spawnSync } from "child_process";
+import { createInterface } from "readline";
+import { tryReadNormFile } from "./file-reader";
 import { MAX_HASH_LINES, fmtRow, HASH_LEN, HASH_SEP } from "./hashline";
 import { MAX_GREP_LINE_BYTES } from "./constants";
 import { toCwd } from "./paths";
 import { loadP, loadGuide } from "./prompts";
-import { normReq } from "./replace-normalize";
-import { recordServedSafe } from "./served";
+import { normReq } from "./payload-contract";
+import { recordServedSafe, buildServedMap } from "./served";
 import { abortIf, errCode, isRec, makePrepareArguments, rejectUnknownFields, truncateToBytes, visLines } from "./utils";
 
 const GREP_KS = new Set(["pattern", "path", "glob", "context", "ignoreCase", "literal", "limit"]);
-const SKIP_DIRS = new Set(["node_modules", ".git", ".tmp", "coverage"]);
-const MAX_SCAN_FILES = 4000;
+
+function cmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 export interface GrepReq {
   pattern: string;
@@ -44,6 +47,7 @@ export function assertGrepReq(request: unknown): asserts request is GrepReq {
 }
 
 function buildRegex(pattern: string, literal: boolean, ignoreCase: boolean): RegExp {
+  if (!literal) assertSafeRegex(pattern);
   const source = literal ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern;
   try {
     return new RegExp(source, ignoreCase ? "ui" : "u");
@@ -52,7 +56,98 @@ function buildRegex(pattern: string, literal: boolean, ignoreCase: boolean): Reg
   }
 }
 
+interface RegexGroupRisk {
+  hasQuantifier: boolean;
+  hasAlternation: boolean;
+}
+
+function unsafeRegex(pattern: string): never {
+  throw new Error(
+    `[E_UNSAFE_REGEX] Refusing potentially exponential regex: ${pattern}. Use literal: true or simplify the expression.`,
+  );
+}
+
+function assertSafeRegex(pattern: string): void {
+  if (pattern.length > 4096) unsafeRegex(pattern);
+  const groups: RegexGroupRisk[] = [];
+  let inClass = false;
+  let escaped = false;
+  let variableQuantifiers = 0;
+  let lastAtom: { groupRisky: boolean; quantified: boolean } | undefined;
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!;
+    if (escaped) {
+      if (!inClass && (/[1-9]/.test(ch) || (ch === "k" && pattern[i + 1] === "<"))) {
+        unsafeRegex(pattern);
+      }
+      escaped = false;
+      lastAtom = { groupRisky: false, quantified: false };
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (inClass) {
+      if (ch === "]") {
+        inClass = false;
+        lastAtom = { groupRisky: false, quantified: false };
+      }
+      continue;
+    }
+    if (ch === "[") {
+      inClass = true;
+      continue;
+    }
+    if (ch === "(") {
+      groups.push({ hasQuantifier: false, hasAlternation: false });
+      lastAtom = undefined;
+      continue;
+    }
+    if (ch === ")") {
+      const group = groups.pop();
+      if (group) {
+        lastAtom = {
+          groupRisky: group.hasQuantifier || group.hasAlternation,
+          quantified: false,
+        };
+      }
+      continue;
+    }
+    if (ch === "|") {
+      const group = groups.at(-1);
+      if (group) group.hasAlternation = true;
+      lastAtom = undefined;
+      continue;
+    }
+    let quantifierLength = 0;
+    if (ch === "*" || ch === "+" || ch === "?") {
+      quantifierLength = 1;
+    } else if (ch === "{") {
+      quantifierLength = /^\{\d+(?:,\d*)?\}/.exec(pattern.slice(i))?.[0].length ?? 0;
+    }
+    if (ch === "{" && quantifierLength > 0) {
+      const quant = pattern.slice(i, i + quantifierLength);
+      const m = /^\{(\d+)/.exec(quant);
+      if (m && Number(m[1]) > 1000) unsafeRegex(pattern);
+    }
+    if (quantifierLength > 0 && lastAtom) {
+      if (ch === "?" && lastAtom.quantified) continue;
+      const variable = ch !== "{" || pattern.slice(i, i + quantifierLength).includes(",");
+      if (variable && ++variableQuantifiers > 1) unsafeRegex(pattern);
+      if (lastAtom.groupRisky) unsafeRegex(pattern);
+      const group = groups.at(-1);
+      if (group) group.hasQuantifier = true;
+      lastAtom.quantified = true;
+      i += quantifierLength - 1;
+      continue;
+    }
+    lastAtom = { groupRisky: false, quantified: false };
+  }
+}
+
 function globToRegex(glob: string): RegExp {
+  if (glob.startsWith("/")) glob = glob.slice(1);
   let source = "";
   let i = 0;
   while (i < glob.length) {
@@ -79,18 +174,14 @@ function globToRegex(glob: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
-function isSkipableLoadError(error: unknown): boolean {
-  const code = errCode(error);
-  if (code === "EACCES" || code === "EPERM" || code === "ENOENT" || code === "ELOOP") return true;
-  return error instanceof Error && error.message.startsWith("[E_FILE_TOO_LARGE]");
-}
-
 interface FileHit {
   path: string;
   displayPath: string;
   fileHashes: string[];
+  fileLines: string[];
   rows: string[];
   hashes: string[];
+  lineNumbers: number[];
   matchCount: number;
   totalMatchCount: number;
   fragmented: boolean[];
@@ -131,100 +222,41 @@ function grepHeadFragment(line: string): string {
   return head.length < line.length ? `${head}...` : head;
 }
 
-interface ScanState {
-  scanned: number;
-  stopped: boolean;
-}
-
-async function walkFiles(
-  root: string,
-  state: ScanState,
-  onFile: (absPath: string) => Promise<void>,
-): Promise<void> {
-  const queue: string[] = [root];
-  while (queue.length > 0 && !state.stopped) {
-    const dir = queue.pop()!;
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (state.stopped) break;
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name)) continue;
-        queue.push(full);
-      } else if (entry.isFile()) {
-        state.scanned += 1;
-        if (state.scanned > MAX_SCAN_FILES) {
-          state.stopped = true;
-          break;
-        }
-        await onFile(full);
-      }
-    }
-  }
-}
-
-async function searchFile(
-  absPath: string,
-  globRoot: string,
-  cwd: string,
-  regex: RegExp,
-  globRegex: RegExp | undefined,
+function makeHitFromIndices(
+  norm: { normalized: string; fileHashes: string[]; absolutePath: string },
+  displayPath: string,
+  matchIndices: number[],
   context: number,
-  maxMatches: number,
-): Promise<FileHit | undefined> {
-  const displayPath = relative(cwd, absPath).replace(/\\/g, "/");
-  if (globRegex) {
-    const globPath = relative(globRoot, absPath).replace(/\\/g, "/");
-    if (!globRegex.test(globPath)) return undefined;
-  }
-  let file;
-  try {
-    file = await loadFileKindAndText(absPath, { maxLines: MAX_HASH_LINES, displayPath });
-  } catch (error) {
-    if (isSkipableLoadError(error)) return undefined;
-    throw error;
-  }
-  if (file.kind !== "text") return undefined;
-  let norm;
-  try {
-    norm = await readNormFile(absPath, cwd, { maxLines: MAX_HASH_LINES, preloadedFile: file, noPersist: true });
-  } catch (error) {
-    if (isSkipableLoadError(error)) return undefined;
-    throw error;
-  }
+  regex: RegExp | undefined,
+  totalMatchCount: number,
+  keptMatchCount: number,
+): FileHit {
   const lines = visLines(norm.normalized);
-  const matchLines: number[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (regex.test(lines[i]!)) matchLines.push(i);
-  }
-  if (matchLines.length === 0) return undefined;
-  const keptMatches = matchLines.length > maxMatches ? matchLines.slice(0, maxMatches) : matchLines;
   const shown = new Set<number>();
-  for (const i of keptMatches) {
+  const kept = matchIndices.slice(0, keptMatchCount);
+  for (const i of kept) {
     for (let j = Math.max(0, i - context); j <= Math.min(lines.length - 1, i + context); j++) shown.add(j);
   }
   const sorted = [...shown].sort((a, b) => a - b);
-  const matchSet = new Set(matchLines);
+  const matchSet = new Set(matchIndices);
   const rows: string[] = [];
   const hashes: string[] = [];
+  const lineNumbers: number[] = [];
   const fragmented: boolean[] = [];
   for (const idx of sorted) {
     const hash = norm.fileHashes[idx]!;
     const line = lines[idx]!;
     const row = fmtRow(hash, line);
     if (Buffer.byteLength(row, "utf-8") > MAX_GREP_LINE_BYTES) {
-      const content = matchSet.has(idx) ? grepMatchFragment(line, regex) : grepHeadFragment(line);
+      const content = matchSet.has(idx) && regex ? grepMatchFragment(line, regex) : grepHeadFragment(line);
       rows.push(fmtRow(hash, content));
       hashes.push(hash);
+      lineNumbers.push(idx + 1);
       fragmented.push(true);
     } else {
       rows.push(row);
       hashes.push(hash);
+      lineNumbers.push(idx + 1);
       fragmented.push(false);
     }
   }
@@ -232,12 +264,140 @@ async function searchFile(
     path: norm.absolutePath,
     displayPath,
     fileHashes: norm.fileHashes,
+    fileLines: lines,
     rows,
     hashes,
-    matchCount: keptMatches.length,
-    totalMatchCount: matchLines.length,
+    lineNumbers,
+    matchCount: kept.length,
+    totalMatchCount,
     fragmented,
   };
+}
+
+async function resolveRgPath(): Promise<string> {
+  try {
+    const r = spawnSync("rg", ["--version"], { stdio: "pipe" });
+    if (!r.error && r.status === 0) return "rg";
+  } catch {}
+  try {
+    const { homedir } = await import("os");
+    const { existsSync } = await import("fs");
+    const home = process.env.HOME ?? homedir();
+    const base = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
+    const bin = join(base, "bin", process.platform === "win32" ? "rg.exe" : "rg");
+    if (existsSync(bin)) {
+      const r = spawnSync(bin, ["--version"], { stdio: "pipe" });
+      if (!r.error && r.status === 0) return bin;
+    }
+  } catch {}
+  try {
+    const { createRequire } = await import("module");
+    const require = createRequire(import.meta.url);
+    const pkgPath = require.resolve("@earendil-works/pi-coding-agent/package.json");
+    const { dirname } = await import("path");
+    const piDir = dirname(pkgPath);
+    const toolsManagerPath = join(piDir, "dist/utils/tools-manager.js");
+    const mod = await import("file://" + toolsManagerPath);
+    if (mod.ensureTool) {
+      const p = await mod.ensureTool("rg", true);
+      if (p) return p;
+    }
+  } catch {}
+  throw new Error("[E_ACCESS] ripgrep (rg) is required for grep but was not found. Install ripgrep or ensure pi can download it to ~/.pi/agent/bin.");
+}
+
+async function collectRgMatches(
+  rgPath: string,
+  pattern: string,
+  searchPath: string,
+  req: GrepReq,
+  signal?: AbortSignal,
+): Promise<Map<string, number[]>> {
+  const args = ["--json", "--line-number", "--color=never", "--hidden", "--glob", "!.git"];
+  if (req.ignoreCase) args.push("--ignore-case");
+  if (req.literal) args.push("--fixed-strings");
+  args.push("--", pattern, searchPath);
+  const result = new Map<string, number[]>();
+  return await new Promise<Map<string, number[]>>((resolve, reject) => {
+    const child = spawn(rgPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const rl = createInterface({ input: child.stdout });
+    let stderr = "";
+    let timedOut = false;
+    const rgTimeout = setTimeout(() => {
+      timedOut = true;
+      if (!child.killed) child.kill("SIGKILL");
+      reject(new Error("rg timeout"));
+    }, 10000);
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    const onAbort = () => {
+      if (!child.killed) child.kill("SIGKILL");
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const cleanup = () => {
+      clearTimeout(rgTimeout);
+      rl.close();
+      signal?.removeEventListener("abort", onAbort);
+    };
+    rl.on("line", (line) => {
+      if (!line.trim()) return;
+      let event: { type?: string; data?: { path?: { text?: string }; line_number?: number } };
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (event.type === "match") {
+        const filePath = event.data?.path?.text;
+        const lineNumber = event.data?.line_number;
+        if (typeof filePath === "string" && typeof lineNumber === "number") {
+          let abs: string;
+          try {
+            abs = filePath.startsWith("/") || /^[A-Za-z]:\\/.test(filePath) ? filePath : join(searchPath, filePath);
+          } catch {
+            abs = filePath;
+          }
+          const list = result.get(abs) ?? [];
+          list.push(lineNumber);
+          result.set(abs, list);
+        }
+      }
+    });
+    child.on("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.on("close", (code) => {
+      cleanup();
+      if (timedOut) return;
+      if (signal?.aborted) {
+        reject(new Error("Operation aborted"));
+        return;
+      }
+      if (code !== 0 && code !== 1) {
+        const msg = stderr.trim() || `ripgrep exited with code ${code}`;
+        reject(new Error(msg));
+        return;
+      }
+      resolve(result);
+    });
+  });
+}
+
+function gutterWidthFor(numbers: number[]): number {
+  let max = 0;
+  for (const n of numbers) if (n > max) max = n;
+  return String(max || 1).length;
+}
+
+function displayRowsForHit(hit: FileHit): string[] {
+  const width = gutterWidthFor(hit.lineNumbers);
+  return hit.rows.map((row, i) => {
+    const n = hit.lineNumbers[i]!;
+    const padded = String(n).padStart(width, " ");
+    return `${padded} │ ${row}`;
+  });
 }
 
 const grepToolSchema = Type.Object(
@@ -252,7 +412,7 @@ const grepToolSchema = Type.Object(
     ),
     glob: Type.Optional(
       Type.String({
-        description: "Filter files by glob pattern; * matches across directories, e.g. '*.ts' or '**/*.spec.ts'",
+        description: "Filter files by glob pattern; * matches across directories, e.g. '*.ts' or '**/*.spec.ts'. A leading / is ignored; the pattern may be relative to the search root or to the current directory.",
       }),
     ),
     ignoreCase: Type.Optional(
@@ -283,22 +443,21 @@ const grepToolSchema = Type.Object(
 
 export function regGrep(pi: ExtensionAPI): void {
   pi.registerTool({
-    name: "grep",
-    label: "Grep",
+    name: "anchor_grep",
+    label: "Anchor Grep",
     description: loadP("../prompts/grep.md"),
     promptSnippet: loadP("../prompts/grep-snippet.md"),
     promptGuidelines: loadGuide("../prompts/grep-guidelines.md"),
     prepareArguments: makePrepareArguments(),
     parameters: grepToolSchema,
+    executionMode: "sequential",
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const canonical = normReq(params);
       assertGrepReq(canonical);
       const req = canonical;
-      const regex = buildRegex(req.pattern, req.literal === true, req.ignoreCase === true);
       const context = req.context ?? 0;
       const limit = req.limit ?? 100;
-      const globRegex = req.glob === undefined ? undefined : globToRegex(req.glob);
       const base = req.path ? toCwd(req.path, ctx.cwd) : ctx.cwd;
       abortIf(signal);
       let baseStat;
@@ -311,15 +470,9 @@ export function regGrep(pi: ExtensionAPI): void {
         throw new Error(`[E_ACCESS] Cannot access path: ${req.path ?? ctx.cwd}`);
       }
       const globRoot = baseStat.isFile() ? dirname(base) : base;
-      const state: ScanState = { scanned: 0, stopped: false };
-      const files: string[] = [];
-      if (baseStat.isFile()) {
-        files.push(base);
-      } else {
-        await walkFiles(base, state, async (absPath) => {
-          files.push(absPath);
-        });
-      }
+      const globRegex = req.glob === undefined ? undefined : globToRegex(req.glob);
+      const validatedRegex = buildRegex(req.pattern, req.literal === true, req.ignoreCase === true);
+      const rgPath = await resolveRgPath();
       const hits: FileHit[] = [];
       let matches = 0;
       let limitTruncated = false;
@@ -331,17 +484,26 @@ export function regGrep(pi: ExtensionAPI): void {
       let truncatedBy: "lines" | "bytes" | null = null;
       let linesReplaced = 0;
       let countOnly = false;
-      for (let f = 0; f < files.length; f++) {
+      const rgMatches = await collectRgMatches(rgPath, req.pattern, base, req, signal);
+      const sortedFiles = [...rgMatches.keys()].sort(cmp);
+      for (let f = 0; f < sortedFiles.length; f++) {
         abortIf(signal);
-        const absPath = files[f]!;
+        const absPath = sortedFiles[f]!;
+        const allNums = rgMatches.get(absPath) ?? [];
+        const totalForFile = allNums.length;
+        const sortedNums = [...allNums].sort((a, b) => a - b);
+        const indices = sortedNums.map((n) => n - 1).filter((n) => n >= 0);
         if (countOnly) {
-          const hit = await searchFile(absPath, globRoot, ctx.cwd, regex, globRegex, context, Number.MAX_SAFE_INTEGER);
-          if (!hit) continue;
-          totalRows += hit.rows.length;
-          for (const row of hit.rows) totalBytes += Buffer.byteLength(row, "utf-8") + 1;
+          const norm = await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, signal });
+          if (!norm) continue;
+          const hit = makeHitFromIndices(norm, relative(ctx.cwd, absPath).replace(/\\/g, "/"), indices, context, validatedRegex, totalForFile, indices.length);
+          const display = displayRowsForHit(hit);
+          totalRows += display.length;
+          for (const r of display) totalBytes += Buffer.byteLength(r, "utf-8") + 1;
           const remaining = limit - matches;
           if (remaining > 0) {
-            matches += Math.min(hit.matchCount, remaining);
+            const add = Math.min(hit.matchCount, remaining);
+            matches += add;
             if (hit.matchCount > remaining) limitTruncated = true;
           } else {
             limitTruncated = true;
@@ -353,24 +515,36 @@ export function regGrep(pi: ExtensionAPI): void {
           limitTruncated = true;
           break;
         }
-        const hit = await searchFile(absPath, globRoot, ctx.cwd, regex, globRegex, context, remaining);
+        const norm = await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, signal });
+        if (!norm) continue;
+        if (globRegex) {
+          const displayPath = relative(ctx.cwd, absPath).replace(/\\/g, "/");
+          const globPath = relative(globRoot, absPath).replace(/\\/g, "/");
+          if (!globRegex.test(globPath) && !globRegex.test(displayPath)) continue;
+        }
+        const hit = makeHitFromIndices(norm, relative(ctx.cwd, absPath).replace(/\\/g, "/"), indices, context, validatedRegex, totalForFile, Math.min(totalForFile, remaining));
         if (!hit) continue;
+        const display = displayRowsForHit(hit);
         const keptRows: string[] = [];
         const keptHashes: string[] = [];
-        for (let i = 0; i < hit.rows.length; i++) {
-          const row = hit.rows[i]!;
+        const keptLineNumbers: number[] = [];
+        const keptFragmented: boolean[] = [];
+        for (let i = 0; i < display.length; i++) {
+          const row = display[i]!;
           const rowBytes = Buffer.byteLength(row, "utf-8") + 1;
           if (rowCount >= DEFAULT_MAX_LINES || byteCount + rowBytes > DEFAULT_MAX_BYTES) {
             rowTruncated = true;
             if (truncatedBy === null) truncatedBy = byteCount + rowBytes > DEFAULT_MAX_BYTES ? "bytes" : "lines";
-            for (let j = i; j < hit.rows.length; j++) {
+            for (let j = i; j < display.length; j++) {
               totalRows += 1;
-              totalBytes += Buffer.byteLength(hit.rows[j]!, "utf-8") + 1;
+              totalBytes += Buffer.byteLength(display[j]!, "utf-8") + 1;
             }
             break;
           }
           keptRows.push(row);
-          keptHashes.push(hit.hashes[i]);
+          keptHashes.push(hit.hashes[i]!);
+          keptLineNumbers.push(hit.lineNumbers[i]!);
+          keptFragmented.push(hit.fragmented[i]!);
           if (hit.fragmented[i]) linesReplaced += 1;
           rowCount += 1;
           byteCount += rowBytes;
@@ -379,11 +553,14 @@ export function regGrep(pi: ExtensionAPI): void {
         }
         if (hit.totalMatchCount > hit.matchCount) limitTruncated = true;
         matches += hit.matchCount;
-        hits.push({ ...hit, rows: keptRows, hashes: keptHashes });
+        const displayHit: FileHit = { ...hit, rows: keptRows, hashes: keptHashes, lineNumbers: keptLineNumbers, fragmented: keptFragmented };
+        hits.push(displayHit);
         if (rowTruncated) countOnly = true;
       }
+      hits.sort((a, b) => cmp(a.displayPath, b.displayPath));
       for (const hit of hits) {
-        await recordServedSafe(hit.path, hit.hashes, "grep", new Set(hit.fileHashes));
+        const servedMap = buildServedMap(hit.fileHashes, hit.fileLines, hit.hashes);
+        await recordServedSafe(hit.path, servedMap, "anchor_grep", new Set(hit.fileHashes));
       }
       const blocks = hits
         .map((hit) => `=== ${hit.displayPath} ===\n${hit.rows.join("\n")}`)
@@ -391,7 +568,6 @@ export function regGrep(pi: ExtensionAPI): void {
       const notes: string[] = [];
       if (rowTruncated) notes.push(`[grep: output truncated at ${DEFAULT_MAX_LINES} rows or ${formatSize(DEFAULT_MAX_BYTES)}; refine the pattern to see more.]`);
       if (limitTruncated) notes.push(`[grep: showing first ${limit} matches; increase limit to see more.]`);
-      if (state.stopped) notes.push(`[grep: scan cap of ${MAX_SCAN_FILES} files reached; results may be incomplete.]`);
       if (linesReplaced > 0) notes.push(`[grep: ${linesReplaced} line(s) exceed ${formatSize(MAX_GREP_LINE_BYTES)} and are shown as truncated fragments; use read to see the full lines.]`);
       const truncated = limitTruncated || rowTruncated;
       const truncation: TruncationResult | undefined = rowTruncated
@@ -418,7 +594,7 @@ export function regGrep(pi: ExtensionAPI): void {
           metrics: {
             matches,
             files: hits.length,
-            truncated: truncated || state.stopped,
+            truncated,
           },
         },
       };

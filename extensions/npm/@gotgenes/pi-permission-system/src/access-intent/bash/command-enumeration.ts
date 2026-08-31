@@ -1,6 +1,6 @@
 import {
   EXECUTION_HOST_TYPES,
-  forEachNestedExecution,
+  forEachExecutionIn,
 } from "#src/access-intent/bash/nested-execution";
 import type { TSNode } from "#src/access-intent/bash/parser";
 import { redirectMayWriteFile } from "#src/access-intent/bash/redirect-analysis";
@@ -79,7 +79,7 @@ interface UnitScope {
 /** A top-level command in the current shell, writing no file. */
 const TOP_LEVEL_SCOPE: UnitScope = { writesViaRedirect: false };
 
-// ── Command enumeration ──────────────────────────────────────────────────────
+// ── Node-type vocabulary ─────────────────────────────────────────────────────
 
 /**
  * Container node types descended into with the enclosing scope unchanged.
@@ -88,6 +88,39 @@ const TOP_LEVEL_SCOPE: UnitScope = { writesViaRedirect: false };
  * node that can establish a write, so it descends with a scope of its own.
  */
 const COMMAND_ENUM_DESCEND = new Set(["program", "list", "pipeline"]);
+
+/**
+ * Compound statements: emitted whole, then descended for their statements.
+ *
+ * The whole emit is what keeps the #306 never-weaker invariant — the commands
+ * found inside are additional units, never a replacement.
+ *
+ * `select` parses as `for_statement` and `until` as `while_statement`, so each
+ * pair is one entry.
+ */
+const COMPOUND_STATEMENT_TYPES = new Set([
+  "if_statement",
+  "while_statement",
+  "for_statement",
+  "c_style_for_statement",
+  "case_statement",
+  "function_definition",
+  "compound_statement",
+  "negated_command",
+]);
+
+/**
+ * Syntactic groupings inside a compound statement: descended, never emitted.
+ *
+ * None of these is something anybody runs — a `do_group` is the loop body's
+ * punctuation — so emitting one would produce a `do rm $f; done` unit.
+ */
+const STATEMENT_GROUP_TYPES = new Set([
+  "do_group",
+  "case_item",
+  "elif_clause",
+  "else_clause",
+]);
 
 /**
  * Named node types abandoned during command enumeration: they are neither
@@ -105,6 +138,33 @@ const COMMAND_ENUM_DESCEND = new Set(["program", "list", "pipeline"]);
 const COMMAND_ENUM_SKIP = new Set(["comment", "heredoc_end"]);
 
 /**
+ * Every node type the enumerator recognizes as a statement.
+ *
+ * This is the enumerator's third question, beside "is this a command?" and
+ * "can this host one?": "is this a *statement*, so that descending an enclosing
+ * compound reaches it?" A compound statement's named children are a mix —
+ * `for_statement` carries its loop variable and word list, `case_statement` its
+ * subject, `function_definition` its name — and descending all of them emits
+ * operand words as bash command units, naming `a` as the offending *command* in
+ * a prompt. Membership is what {@link descendStatementChildren} filters on.
+ */
+const STATEMENT_TYPES = new Set([
+  "command",
+  "redirected_statement",
+  "subshell",
+  "declaration_command",
+  "variable_assignment",
+  "test_command",
+  "unset_command",
+  "ERROR",
+  ...COMMAND_ENUM_DESCEND,
+  ...COMPOUND_STATEMENT_TYPES,
+  ...STATEMENT_GROUP_TYPES,
+]);
+
+// ── Command enumeration ──────────────────────────────────────────────
+
+/**
  * Enumerate the command units of a bash program, in source order.
  *
  * Descends container nodes (`program`, `list`, `pipeline`,
@@ -114,10 +174,14 @@ const COMMAND_ENUM_SKIP = new Set(["comment", "heredoc_end"]);
  * subshells (`( … )`) — emitting each inner command as its own unit *in
  * addition to* the enclosing command, since those inner commands really execute
  * (#306).
- * Control-flow bodies and `{ … }` brace groups are emitted whole without
- * descending (deferred).
+ * A compound statement (control flow, a function definition, a `{ … }` brace
+ * group) is emitted whole and then descended for the statements it contains,
+ * while its operand words — a loop variable, a word list, a `case` subject, a
+ * function's own name — are not commands and are left unemitted. An `ERROR`
+ * node is the one exception: its recovered structure is invented rather than
+ * observed, so the unparsed blob is emitted whole and never descended (#742).
  *
- * The enclosing command/subshell is always still emitted whole, so adding the
+ * The enclosing command/statement is always still emitted whole, so adding the
  * nested units can only ever produce a more-restrictive decision, never weaker.
  *
  * Each emitted command unit has any leading `variable_assignment` prefix
@@ -172,9 +236,33 @@ function collectCommandsInto(
     return;
   }
 
+  if (COMPOUND_STATEMENT_TYPES.has(node.type)) {
+    out.push(makeUnit(node.text, scope)); // never-weaker whole emit
+    descendStatementChildren(node, scope, out);
+    return;
+  }
+
+  if (STATEMENT_GROUP_TYPES.has(node.type)) {
+    descendStatementChildren(node, scope, out);
+    return;
+  }
+
+  if (node.type === "ERROR") {
+    // Tree-sitter's error recovery *invents* structure, so the node types
+    // inside an ERROR subtree are not evidence that anything runs: descending
+    // one turns backtick-quoted prose in an unterminated heredoc into command
+    // units. Emit the unparsed blob whole and stop (#742).
+    out.push(makeUnit(node.text, scope));
+    return;
+  }
+
   // Any other named statement (compound_statement `{ … }`, if/while/for/case,
   // function_definition): emit whole, do not descend — deferred (#306).
+  // A declaration, assignment, test, or `unset` still hosts executions that
+  // really run (`local x=$(rm y)`, `[[ $(rm x) ]]`), so those are enumerated
+  // in addition to the statement (#742).
   out.push(makeUnit(node.text, scope));
+  collectHostedCommands(node, out);
 }
 
 /** The wrapper facts a `command` node's words establish about its unit. */
@@ -292,15 +380,47 @@ function descendCommandChildren(
 }
 
 /**
+ * Descend a compound statement's children, enumerating only the ones that are
+ * themselves statements.
+ *
+ * The filter is the whole difference from {@link descendCommandChildren}, whose
+ * container types (`program` / `list` / `pipeline` / `redirected_statement` /
+ * `subshell`) have nothing but statement children. Here the children are a mix,
+ * and a non-statement one is an operand word rather than something that runs.
+ *
+ * A non-statement child is not abandoned, though: `for f in $(rm x)` hosts a
+ * real execution in its word list, which is what the second branch reaches.
+ *
+ * The scope is relayed unchanged — a compound statement's body runs in the
+ * current shell, so a write established by an enclosing `redirected_statement`
+ * covers every unit beneath it (#803).
+ */
+function descendStatementChildren(
+  node: TSNode,
+  scope: UnitScope,
+  out: BashCommand[],
+): void {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (!child?.isNamed) continue;
+    if (STATEMENT_TYPES.has(child.type)) collectCommandsInto(child, scope, out);
+    else collectHostedCommands(child, out);
+  }
+}
+
+/**
  * Enumerate the commands of every nested execution context in a subtree, each
  * tagged with the context it was found in.
  *
  * The traversal itself lives in `nested-execution.ts` so the bash path surface
  * shares one definition of what counts as a nested execution (#741); this
  * function supplies the command-surface interpretation of each one found.
+ *
+ * `node` may be a context outright or merely host one, so the traversal is the
+ * root-inclusive `forEachExecutionIn`.
  */
 function collectHostedCommands(node: TSNode, out: BashCommand[]): void {
-  forEachNestedExecution(node, (contextNode, context) => {
+  forEachExecutionIn(node, (contextNode, context) => {
     // A nested execution starts fresh: an enclosing statement's redirect is
     // that statement's, not the substitution's, exactly as #807 attributes a
     // nested command's path tokens to its own command.

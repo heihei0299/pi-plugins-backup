@@ -1,8 +1,9 @@
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
-import { normReq } from "./replace-normalize";
-import type { ReqParams, ReplaceDetails } from "./replace";
-import { isRec } from "./utils";
+import type { ReplaceDetails } from "./replace";
+import { withLineNumbers } from "./utils";
+import { getPreviewInput } from "./payload-contract";
+export { getPreviewInput };
 
 export type FgT = Pick<Theme, "fg">;
 export type CallT = Pick<Theme, "fg" | "bold">;
@@ -20,42 +21,12 @@ export type RRState = {
 	previewTimer?: ReturnType<typeof setTimeout>;
 };
 
-export function getPreviewInput(
-	args: unknown,
-): ReqParams | null {
-	let normalized: unknown;
-	try {
-		normalized = normReq(args);
-	} catch {
-		return null;
-	}
-	if (!isRec(normalized) || typeof normalized.path !== "string") {
-		return null;
-	}
-
-	if (
-		typeof normalized.remove_from !== "string" ||
-		typeof normalized.remove_to !== "string" ||
-		!Array.isArray(normalized.replacement_lines) ||
-		normalized.replacement_lines.some((line) => typeof line !== "string")
-	) {
-		return null;
-	}
-
-	const request: ReqParams = {
-		path: normalized.path,
-		remove_from: normalized.remove_from,
-		remove_to: normalized.remove_to,
-		replacement_lines: normalized.replacement_lines,
-	};
-	return request;
-}
-
 type DiffRowKind = "added" | "removed" | "context";
 
 function diffRowKind(line: string): DiffRowKind {
-	if (line.startsWith("+") && !line.startsWith("+++")) return "added";
-	if (line.startsWith("-") && !line.startsWith("---")) return "removed";
+	const stripped = line.replace(/^\s*\d+\s+│\s*/, "");
+	if (stripped.startsWith("+") && !stripped.startsWith("+++")) return "added";
+	if (stripped.startsWith("-") && !stripped.startsWith("---")) return "removed";
 	return "context";
 }
 
@@ -66,6 +37,9 @@ export function colorLines(lines: string[], theme: FgT): string[] {
 		if (kind === "removed") return theme.fg("error", line);
 		return theme.fg("dim", line);
 	});
+}
+export function toNumberedDiff(diff: string, lineNumbers: (number|undefined)[]): string {
+	return withLineNumbers(diff, lineNumbers);
 }
 
 export function fmtPreview(
@@ -173,10 +147,11 @@ export function buildAppliedText(
 	const summary = extractSummary(text);
 	if (summary) sections.push(summary);
 	if (details?.diff) {
+		const rawDiff = details.diffLineNumbers ? toNumberedDiff(details.diff, details.diffLineNumbers) : details.diff;
 		const diffLines = details.diff.split("\n");
 		const diffSection = expanded
-			? fmtResult(details.diff, theme)
-			: fmtPreview(details.diff, false, theme);
+			? fmtResult(rawDiff, theme)
+			: fmtPreview(rawDiff, false, theme);
 		const hint =
 			!expanded && diffLines.length > RESULT_PREVIEW_LINES
 				? ` (${expandHint()})`
@@ -322,10 +297,12 @@ export function makeRenderCall(
 
 export function renderEditResult(
 	result: { content?: Array<{ type: string; text?: string }>; details?: ReplaceDetails },
-	isPartial: boolean,
+	options: { isPartial: boolean; expanded?: boolean } | boolean,
 	theme: FgT,
 	context: any,
 ): Text | Markdown {
+	const isPartial = typeof options === "boolean" ? options : options.isPartial;
+	const optionsExpanded = typeof options === "boolean" ? undefined : options.expanded;
 	if (isPartial) return reuseText(context, theme.fg("warning", "Editing..."));
 	const renderedText = getResultText(result);
 	const renderState = context.state as RRState | undefined;
@@ -343,7 +320,8 @@ export function renderEditResult(
 			: new Text("", 0, 0);
 	}
 	if (isApplied(result.details)) {
-		const appliedText = buildAppliedText(renderedText, result.details, theme, context.expanded === true);
+		const isExpanded = optionsExpanded === true || context.expanded === true;
+		const appliedText = buildAppliedText(renderedText, result.details, theme, isExpanded);
 		return appliedText ? reuseText(context, appliedText) : new Text("", 0, 0);
 	}
 	if (!renderedText) return new Text("", 0, 0);

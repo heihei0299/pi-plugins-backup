@@ -1,13 +1,13 @@
 import { constants } from "fs";
 import { stat } from "fs/promises";
+import { relative } from "path";
 import { lineHashes } from "./hashline";
 import { loadFileKindAndText, type LFile } from "./file-kind";
-import { resolveTarget } from "./fs-write";
+import { resolveTarget, type FileIdentity } from "./fs-write";
 import { toCwd } from "./paths";
-import { detectEnding, toLF, stripBOM, type LineEnding } from "./replace-diff";
-import { abortIf } from "./utils";
+import { detectEnding, toLF, stripBOM, type LineEnding } from "./normalize";
+import { abortIf, errCode, assertLineLimit } from "./utils";
 import { valKind, valAccess } from "./validation";
-import { visLines } from "./utils";
 import type { HashStore } from "./hash-store";
 export interface NormFile {
   absolutePath: string;
@@ -16,6 +16,7 @@ export interface NormFile {
   originalEnding: LineEnding;
   fileHashes: string[];
   hadUtf8DecodeErrors: boolean;
+  identity: FileIdentity;
 }
 
 export type SnapInfo = {
@@ -52,7 +53,7 @@ export async function safeSnapId(
   try {
     return (await fileSnap(absolutePath)).snapshotId;
   } catch (error) {
-    console.error(`Failed to compute snapshot (${context}):`, error);
+    console.error(`[safeSnapId] ${context}: failed to stat "${absolutePath}" (code=${errCode(error) ?? "?"}):`, error);
     return undefined;
   }
 }
@@ -91,22 +92,42 @@ export async function readNormFile(
   const originalEnding = detectEnding(rawContent);
   const normalized = toLF(rawContent);
 
-  if (options?.maxLines !== undefined) {
-    const lineCount = visLines(normalized).length;
-    if (lineCount > options.maxLines) {
-      throw new Error(
-        `[E_FILE_TOO_LARGE] ${path} has ${lineCount} lines, exceeding the ${options.maxLines}-line hashline limit. For very large files, use write.`,
-      );
-    }
-  }
+  if (options?.maxLines !== undefined) assertLineLimit(normalized, path, options.maxLines);
 
   const fileHashes = await lineHashes(normalized, resolvedPath, undefined, options?.store, options?.noPersist !== true);
+  let identity = file.identity;
+  if (!identity) {
+    const { dev, ino } = await stat(resolvedPath);
+    identity = { dev, ino };
+  }
   return {
     absolutePath: resolvedPath,
     normalized,
     bom,
     originalEnding,
     fileHashes,
+    identity,
     hadUtf8DecodeErrors: file.hadUtf8DecodeErrors === true,
   };
+}
+
+export async function tryReadNormFile(
+  absPath: string,
+  cwd: string,
+  options?: ReadNormOptions,
+): Promise<NormFile | undefined> {
+  try {
+    const displayPath = relative(cwd, absPath).replace(/\\/g, "/") || absPath;
+    const file = await loadFileKindAndText(absPath, { maxLines: options?.maxLines, displayPath });
+    if (file.kind !== "text") return undefined;
+    return await readNormFile(absPath, cwd, { ...options, preloadedFile: file });
+  } catch (error) {
+    const code = errCode(error);
+    if (code === "EACCES" || code === "EPERM" || code === "ENOENT" || code === "ELOOP") return undefined;
+    if (error instanceof Error) {
+      const msg = error.message;
+      if (msg.startsWith("[E_FILE_TOO_LARGE]") || msg.startsWith("[E_NOT_FOUND]") || msg.startsWith("[E_ACCESS]") || msg.startsWith("[E_NOT_TEXT]")) return undefined;
+    }
+    throw error;
+  }
 }

@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/pi-hashline-edit-pro.svg)](https://www.npmjs.com/package/pi-hashline-edit-pro) [![npm downloads](https://img.shields.io/npm/dm/pi-hashline-edit-pro.svg)](https://www.npmjs.com/package/pi-hashline-edit-pro)
 
-Anchor-based `read`, `replace`, `insert`, and `grep` tools for [pi-coding-agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent). Every line of a file gets a unique 3-character anchor, and you edit by anchor. There are no line numbers and no fuzzy matching, so edits land on the lines you meant.
+Anchor-based `read`, `replace`, `insert`, and `anchor_grep` tools for [pi-coding-agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent). Every line of a file gets a unique 3-character anchor, and you edit by anchor. There are no line numbers and no fuzzy matching, so edits land on the lines you meant.
 
 Fork of [pi-hashline-edit](https://github.com/RimuruW/pi-hashline-edit) by RimuruW, extended with 3-character anchors and collision resolution.
 
@@ -11,7 +11,7 @@ Fork of [pi-hashline-edit](https://github.com/RimuruW/pi-hashline-edit) by Rimur
 - `read` returns every line as `anchor│content`. The anchor is the line's address.
 - `replace` targets a range of anchors, so edits land on the lines you meant.
 - `insert` adds lines after or before a line by anchor: the anchor line is preserved and the new lines are applied literally, never deduplicated.
-- `grep` returns matching lines (and requested context) with `anchor│content` rows that are served like read output, so search results are immediately editable.
+- `anchor_grep` returns matching lines (and requested context) with `anchor│content` rows that are served like read output, so search results are immediately editable.
 - Editing one part of a file leaves the anchors of the rest unchanged, so anchors from an earlier read stay valid across edits.
 - After a `write` you get the new anchors. After a `replace` or `insert` you get the diff with the new anchors.
 - The most recent replace or insert on a file can be reverted, even after a restart.
@@ -63,7 +63,7 @@ pi install /path/to/pi-hashline-edit-pro
 
 Paged output ends with a continuation hint, for example `[Showing lines 1-50 of 120. Use offset=51 to continue.]`.
 
-Lines up to 50KB are shown in full. A larger line is replaced by a marker that keeps the line's anchor: `anchor│[Line N is 2.2MB, exceeds 50KB; content not shown. Use bash: sed -n 'Np' <path> | head -c 51200]`. The marker is served like a normal row, so the whole line can still be replaced via that anchor; `grep` shows an anchored fragment around a match on such a line instead.
+Lines up to 50KB are shown in full. A larger line is replaced by a marker that keeps the line's anchor: `anchor│[Line N is 2.2MB, exceeds 50KB; content not shown. Use bash: sed -n 'Np' <path> | head -c 51200]`. The marker is served like a normal row, so the whole line can still be replaced via that anchor; `anchor_grep` shows an anchored fragment around a match on such a line instead.
 
 Edge cases:
 
@@ -125,33 +125,35 @@ Notes:
 
 Notes:
 
-- The anchor line must have been shown to you (read output, a post-edit diff row, grep output, or stale-range feedback). The same verification as `replace` applies: a stale or unshown anchor is rejected with `[E_STALE_ANCHOR]`, `[E_AMBIGUOUS_ANCHOR]`, or `[E_RANGE_STALE]` and the retry needs no `read`.
+- The anchor line must have been shown to you (read output, a post-edit diff row, anchor_grep output, or stale-range feedback). The same verification as `replace` applies: a stale or unshown anchor is rejected with `[E_STALE_ANCHOR]`, `[E_AMBIGUOUS_ANCHOR]`, or `[E_RANGE_STALE]` and the retry needs no `read`.
 - Lines are applied literally: nothing is removed, and a line that duplicates its neighbor is kept. `replace`'s boundary anti-duplication never runs for `insert`.
 - To seed an empty file, read it and insert after the `anchor│` empty-line row.
 - The same safety machinery as `replace` applies: undo is saved before the write (a failed write restores the previous undo record), line endings and BOMs survive, and an applied insert clears a pending boundary bypass.
 - Inserting nothing (`lines: []`) reports a noop and leaves the file unchanged; inserted lines are never deduplicated.
 
-## The grep tool
+## The anchor_grep tool
 
-`grep` replaces the built-in grep with an anchored search. Every matching line (and each requested context line) is returned as an `anchor│content` row, and those rows are recorded in the served state exactly like `read` output, so you can target them with `replace` or `insert` immediately without a separate `read`.
+`anchor_grep` replaces the built-in grep with an anchored search backed by ripgrep. While `anchor_grep` is enabled, the built-in grep is disabled; disabling `anchor_grep` restores it if it was active before the extension loaded. Every matching line (and each requested context line) is returned as `lineNumber │ anchor│content` — the `anchor│content` part is served exactly like `read` output, so you can target it with `replace`/`insert` without a separate `read`, while the line-number gutter and `=== path ===` header give filename and line for navigation (press Return to jump).
 
 | Field | Description |
 | --- | --- |
 | `pattern` | Search pattern (regex, or literal text when `literal` is true). |
 | `path` | File or directory to search (default: the current working directory). |
-| `glob` | Filter files by glob pattern; `*` matches across directories, e.g. `*.ts` or `**/*.spec.ts`. |
+| `glob` | Filter files by glob pattern; `*` matches across directories, e.g. `*.ts` or `**/*.spec.ts`. A leading `/` is ignored, and the pattern may be relative to the search root or to the current directory. |
 | `ignoreCase` | Case-insensitive search (default: false). |
 | `literal` | Treat the pattern as literal text instead of a regex (default: false). |
 | `context` | Lines of context before and after each match; context rows carry anchors too (default: 0). |
 | `limit` | Maximum number of matched lines to return (default: 100). |
 
 Notes:
-- Results are grouped per file under a `=== path ===` header; every shown row carries the anchor it would have in `read` output.
-- Directory searches skip `node_modules`, `.git`, `.tmp`, and `coverage`. Binary, image, and oversized files are skipped silently.
-- Output is capped at `limit` matched lines, 2000 rows, and 50KB of text (whichever comes first), with a hint naming the cap that cut results. A matched line longer than 500 bytes is shown as a fragment around the match with `...` marking the truncated sides, so the relevant part of the hit stays visible; a context line over 500 bytes is shown as its head with a trailing `...`. Fragments keep the line's anchor (long lines are hashed from their first 500 bytes) and are served like full rows, so a fragmented match is still editable with `replace` (which always replaces the whole line). Directory scans stop after 4000 files with a hint; results may be incomplete.
+- Results are grouped per file under a `=== path ===` header; every shown row is `lineNumber │ anchor│content` where `anchor│content` is the anchor it would have in `read` output.
+- Directory searches use ripgrep, respecting `.gitignore` (including parent directories); `.git` is always skipped, and hidden files are searched, so `node_modules`, `.tmp`, and `coverage` are skipped only when a `.gitignore` lists them. Binary, image, and oversized files are skipped silently.
+- Regex patterns with backreferences, nested quantifiers, quantified alternation, or multiple variable quantifiers are rejected with `[E_UNSAFE_REGEX]` before any files are scanned; use `literal: true` when regex behavior is unnecessary.
+- Output is capped at `limit` matched lines, 2000 rows, and 50KB of text (whichever comes first), with a hint naming the cap that cut results. A matched line longer than 500 bytes is shown as a fragment around the match with `...` marking the truncated sides, so the relevant part of the hit stays visible; a context line over 500 bytes is shown as its head with a trailing `...`. Fragments keep the line's anchor (long lines are hashed from their first 500 bytes) and are served like full rows, so a fragmented match is still editable with `replace` (which always replaces the whole line).
 - `file_path` works as an alias for `path`.
 - Line endings and BOMs survive every edit. The file's line ending is detected from its first newline and restored on write; a file that mixes LF and CRLF (for example a WSL-edited file) is normalized to the first-seen ending.
 - Files with multiple hard links (`nlink > 1`) are rewritten in place rather than via a temp-file rename, so every link keeps seeing the same content; that write is direct rather than atomic.
+- The anchor_grep tool is enabled by default. Disable it with `/toggle-anchor-grep` (or set `anchorGrepEnabled` to `false` in the config file); the setting persists across sessions. When disabled, anchor_grep is removed from the model's toolset and the built-in grep is restored only if it was active before the extension loaded — a grep tool that was never enabled stays off.
 
 ## Undo
 
@@ -170,7 +172,7 @@ Notes:
 Enabled by default. After a successful `write`, the extension reads the file and appends an `--- Auto-read (hashline anchors) ---` block to the result, so you get fresh `anchor│content` anchors without a separate `read` call.
 
 - After `replace`, `insert`, and `undo_last_change`, the result shows the post-edit diff. The `+anchor│` and ` anchor│` rows carry the current anchors, so follow-up edits can anchor on the diff directly. The `-anchor│` rows show removed lines with their old anchors, so you can see exactly which anchors were deleted (those anchors are stale after the edit). When the context line touching a change is blank or whitespace-only, one more context line is shown in that direction, so the change stays anchored to visible content. Call `read` when you want the full file's anchors.
-- Auto-read keeps the same 50KB / 2000-line budget as `read`. Lines over 50KB are shown as markers that keep the line's anchor (use `grep` for a fragment around a match).
+- Auto-read keeps the same 50KB / 2000-line budget as `read`. Lines over 50KB are shown as markers that keep the line's anchor (use `anchor_grep` for a fragment around a match).
 - Toggle at runtime with `/toggle-auto-read`; the setting persists across sessions.
 
 ## Tool result details
@@ -180,19 +182,21 @@ All five tools return machine-readable metadata in `details` alongside the model
 - `read`: `details.truncation` (set when the output was truncated), `details.snapshotId` (a `v2|path|ino|mtime|ctime|size` fingerprint of the file), `details.nextOffset` (use as the next `offset`), and `details.metrics` with `truncated` and `next_offset`.
 - `replace` and `insert`: `details.diff` (the post-edit diff, capped at 50KB with markers for oversized rows; `+HASH│` and ` HASH│` rows carry the current anchors), `details.patch` (a standard unified patch of the changes, for external tools, capped at 50KB like the diff), `details.patchTruncated` (true when the patch was cut to fit the cap and cannot be applied as-is), `details.firstChangedLine`, `details.snapshotId`, `details.classification` (`"noop"` when nothing changed), and `details.metrics`: `edits_attempted`, `edits_noop`, `warnings`, `classification` (`"applied"` or `"noop"`), `changed_lines` (`{ first, last }`), `added_lines`, `removed_lines`.
 - `undo_last_change`: `details.diff` (the undo diff with the restored anchors), `details.patch` (a standard unified patch of the restored changes, capped at 50KB like `replace`), `details.patchTruncated` (true when the patch was cut), and `details.metrics` (same shape as `replace`).
-- `grep`: `details.metrics` with `matches` (matched lines found, capped at `limit`), `files`, and `truncated` (true when the row, byte, file-scan, or `limit` cap cut the results), plus `details.truncation` (the standard pi truncation report — `truncatedBy`, `totalLines`, `outputLines`, `maxLines`, `maxBytes`, … — when the output was cut) and `details.linesTruncated` (true when long lines were shown as fragments).
+- `anchor_grep`: `details.metrics` with `matches` (matched lines found, capped at `limit`), `files`, and `truncated` (true when the row, byte, file-scan, or `limit` cap cut the results), plus `details.truncation` (the standard pi truncation report — `truncatedBy`, `totalLines`, `outputLines`, `maxLines`, `maxBytes`, … — when the output was cut) and `details.linesTruncated` (true when long lines were shown as fragments).
 
 ## Settings
 
 | Command | Description |
 | --- | --- |
 | `/toggle-auto-read` | Toggle auto-read anchors after write and post-edit diffs after replace, insert, and undo_last_change. Persists across sessions. |
+| `/toggle-anchor-grep` | Enable or disable the anchor_grep tool (the built-in grep is disabled while anchor_grep is on). Persists across sessions. |
 
 Settings live in `~/.config/pi-hashline-edit-pro/config.json`, created automatically when a setting is toggled. On non-Windows platforms, the config directory honors `XDG_CONFIG_HOME` when set (falling back to `~/.config`); on Windows it always uses `~/.config`:
 
 ```json
 {
-  "autoRead": true
+  "autoRead": true,
+  "anchorGrepEnabled": true
 }
 ```
 
@@ -205,6 +209,8 @@ The alphabet is sized for an LLM consumer: the model reads the hashes as tokens 
 Anchors are unique by construction. If a line's base hash collides with an already-assigned hash, the next free hash is allocated from a bitset by probing with a stride coprime to the hash space (O(1) amortized). The stride is `62² + 62 + 1`, so consecutive collisions, runs of blank lines, repeated `}`, land on anchors that differ in all three characters instead of sharing a prefix. Every line in a file therefore gets a unique anchor; two byte-identical lines (repeated `}`, repeated `import` statements) never share one. The same guarantee sets the file size cap: at most 238,328 lines per file, beyond which `read`, `replace`, and `insert` reject with `[E_FILE_TOO_LARGE]` (use `write` for very large files).
 
 Hashes live in a persistent per-file store (`~/.config/pi-hashline-edit-pro/hash-store.sqlite`) that keeps the hashes of unchanged lines across edits. When a range is replaced, the runtime maps the old content onto the new content and copies hashes for lines that survived; only genuinely new lines get fresh hashes.
+
+On POSIX systems, the state directory is restricted to mode `0700` and the SQLite database plus its WAL/SHM sidecars to `0600`. The undo table contains the complete pre-edit and post-edit text for the latest edit to each file, so the store should still be treated as sensitive data.
 
 The store also keeps a per-file record of the hashes the model was last served (`read` rows, auto-read blocks, post-edit diff rows), pruned to the file's current hashes on every update so removed lines' hashes do not accumulate. `replace` verifies every line of the resolved range against that record before writing; a line whose hash is missing from the record means it either changed on disk after it was shown or was never shown, and the edit is refused with `[E_RANGE_STALE]`. A `write` clears the record, so edits after a write are verified against whatever the next `read` or auto-read block serves.
 
@@ -235,6 +241,9 @@ A no-op replace never changes the file, so anchors remain valid. On first run af
 | `[E_RANGE_STALE]` | A line in the replaced range no longer matches what was last shown (the file changed on disk, or the line was never shown). The edit was refused; the current range is returned with fresh anchors. |
 | `[E_BOUNDARY_BYPASS]` | The boundary anti-duplication was turned off for one replace call (an identical replacement had previously been cut to a noop); the duplicate lines were applied literally. The dedup is restored for the next call. |
 | `[E_FILE_TOO_LARGE]` | The file exceeds the 238,328-line hashline limit or the 100MB size limit. |
+| `[E_WRITE_HASH_ECHO]` | A `write` `content` line begins with the exact `anchor│` served for this file at the same line. The write is refused, file byte-identical; retry with bare content (remove the copied anchors). |
+| `[E_PATH_CHANGED]` | A write target changed identity after it was read; the write was refused to avoid following a swapped symlink or overwriting a replacement file. |
+| `[E_UNSAFE_REGEX]` | A grep regex can trigger excessive backtracking; simplify it or search with `literal: true`. |
 
 ## Troubleshooting
 

@@ -1,16 +1,17 @@
-import { readFile } from "fs/promises";
+import { constants } from "fs";
+import { open } from "fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadHashStore, upsertSnapshot, upsertUndo, getUndoEntry, deleteUndo, type UndoRecord } from "./hash-store";
-import { recordServedDiff } from "./served";
-import { contentChecksum } from "./hashline/hasher";
-import { resolveTarget, writeAtomic } from "./fs-write";
-import { toCwd } from "./paths";
-import { toLF, stripBOM, genDiff, genPatch, restoreEndings, type LineEnding } from "./replace-diff";
-import { cntDiff, splitLines, errCode, makePrepareArguments } from "./utils";
+import { loadHashStore, persistSnapshot, upsertUndo, getUndoEntry, deleteUndo, type UndoRecord } from "./hash-store";
+import { recordServed, buildServedMap, servedHashesFromDiff } from "./served";
+import { resolveInCwd, writeAtomic, type FileIdentity } from "./fs-write";
+import { toLF, stripBOM, restoreEndings, type LineEnding } from "./normalize";
+import { genDiff, genPatch } from "./replace-diff";
+import { cntDiff, errCode, makePrepareArguments, splitLines } from "./utils";
 import { loadP, loadGuide } from "./prompts";
 import { buildMetrics } from "./replace-response";
+import { renderEditResult } from "./replace-render";
 import { changedRange, lineHashes } from "./hashline";
 export interface UndoEntry {
   content: string;
@@ -98,11 +99,13 @@ export function regUndo(pi: ExtensionAPI): void {
         description: "Path to the file to undo",
       }),
     }),
-
+    executionMode: "sequential",
+    renderResult(result, opts, theme, context) {
+      return renderEditResult(result as never, opts as { isPartial: boolean; expanded?: boolean }, theme as never, context as never);
+    },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const path = params.path;
-      const absolutePath = toCwd(path, ctx.cwd);
-      const mutationTargetPath = await resolveTarget(absolutePath);
+      const { resolved: mutationTargetPath } = await resolveInCwd(path, ctx.cwd);
 
       const undo = await getUndo(mutationTargetPath);
       if (!undo) {
@@ -120,8 +123,17 @@ export function regUndo(pi: ExtensionAPI): void {
 
       return withFileMutationQueue(mutationTargetPath, async () => {
         let currentRaw: string | undefined;
+        let currentIdentity: FileIdentity | undefined;
         try {
-          currentRaw = await readFile(mutationTargetPath, "utf-8");
+          const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+          const handle = await open(mutationTargetPath, constants.O_RDONLY | noFollow);
+          try {
+            const { dev, ino } = await handle.stat();
+            currentIdentity = { dev, ino };
+            currentRaw = await handle.readFile("utf-8");
+          } finally {
+            await handle.close();
+          }
         } catch (error) {
           if (errCode(error) !== "ENOENT") throw error;
         }
@@ -145,6 +157,7 @@ export function regUndo(pi: ExtensionAPI): void {
         await writeAtomic(
           mutationTargetPath,
           undo.bom + restoreEndings(undo.content, undo.originalEnding),
+          currentIdentity,
         );
 
         const currentNormalized = currentRaw === undefined ? "" : toLF(stripBOM(currentRaw).text);
@@ -153,12 +166,16 @@ export function regUndo(pi: ExtensionAPI): void {
         const linesAddedByReplace = cntDiff(diffResult.diff, "+");
         const linesRemovedByReplace = cntDiff(diffResult.diff, "-");
         const restoredRange = changedRange(currentNormalized, undo.content);
-        const undoDiff = genDiff(currentNormalized, undo.content, 1, undo.hashes, currentHashes).diff;
+        const undoDiffResult = genDiff(currentNormalized, undo.content, 1, undo.hashes, currentHashes);
+        const undoDiff = undoDiffResult.diff;
 
         try {
           const store = await loadHashStore();
-          upsertSnapshot(store, mutationTargetPath, contentChecksum(undo.content), splitLines(undo.content).length, undo.hashes);
-          recordServedDiff(store, mutationTargetPath, undoDiff, new Set(undo.hashes));
+          persistSnapshot(store, mutationTargetPath, undo.content, undo.hashes);
+          const diffHashes = servedHashesFromDiff(undoDiff);
+          const undoLines = splitLines(undo.content);
+          const servedMap = buildServedMap(undo.hashes, undoLines, diffHashes);
+          recordServed(store, mutationTargetPath, servedMap, new Set(undo.hashes));
         } catch (error) {
           console.error("Failed to restore hash store snapshot after undo:", error);
         }
@@ -190,6 +207,7 @@ export function regUndo(pi: ExtensionAPI): void {
           ],
           details: {
             diff: undoDiff,
+            diffLineNumbers: undoDiffResult.lineNumbers,
             patch: patchResult.patch,
             ...(patchResult.truncated ? { patchTruncated: true as const } : {}),
             metrics: buildMetrics({

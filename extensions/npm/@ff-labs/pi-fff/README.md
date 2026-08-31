@@ -116,7 +116,7 @@ Parameters:
 
 - `/fff-health` — show FFF status (indexed files, git info, frecency/history DB status)
 - `/fff-rescan` — trigger a file rescan
-- `/fff-mode <mode>` — switch mode (tool name change requires restart)
+- `/fff-mode <mode>` — switch mode (tool name changes require `/reload`)
 
 ## Modes
 
@@ -124,10 +124,47 @@ Parameters:
 - `tools-only`: additional tools only; keep pi's default `@` autocomplete
 - `override`: replaces pi's built-in `find`, `grep` and adds `multi_grep` + FFF-backed `@` autocomplete
 
-Mode precedence:
+Startup mode precedence:
 1. `--fff-mode <mode>` CLI flag
 2. `PI_FFF_MODE=<mode>` environment variable
-3. default (`tools-and-ui`)
+3. `mode` in the global config file
+4. default (`tools-and-ui`)
+
+When a session resumes, its most recent `/fff-mode` selection takes precedence over the startup resolution above. Switching to or from `override` takes effect after `/reload`, when the tools are registered again.
+
+## Configuration
+
+For persistent global configuration, create `pi-fff.json` in pi's agent directory (`~/.pi/agent/pi-fff.json` by default; `PI_CODING_AGENT_DIR` is respected):
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/dmtrKovalenko/fff/main/packages/pi-fff/pi-fff.schema.json",
+  "mode": "override",
+  "frecencyDbPath": "/path/to/frecency",
+  "historyDbPath": "/path/to/history",
+  "enableFsRootScanning": false,
+  "enableHomeDirScanning": true,
+  "warnOnHomeDirScan": true,
+  "followSymlinks": true
+}
+```
+
+All fields are optional:
+
+| Field | Type | Default |
+|---|---|---|
+| `$schema` | non-empty string | none |
+| `mode` | `tools-and-ui`, `tools-only`, or `override` | `tools-and-ui` |
+| `frecencyDbPath` | non-empty string | See [Data](#data) |
+| `historyDbPath` | non-empty string | See [Data](#data) |
+| `enableFsRootScanning` | boolean | `false` |
+| `enableHomeDirScanning` | boolean | `true` |
+| `warnOnHomeDirScan` | boolean | `true` |
+| `followSymlinks` | boolean | `true` |
+
+CLI flags take precedence over environment variables, which take precedence over this file. A missing file is ignored. Malformed JSON, unknown fields, and invalid values stop the extension from loading and report the file path and error. `/fff-mode` changes the current session; it does not edit this file.
+
+The file is global only. Project-level config cannot safely control tool names because pi decides which tools an extension registers before project configuration can be trusted.
 
 ## Flags
 
@@ -136,6 +173,8 @@ Mode precedence:
 - `--fff-history-db <path>` — path to query history database (also: `FFF_HISTORY_DB` env). Optional; see [Data](#data) for the default.
 - `--fff-enable-root-scan` — allow indexing when launched from `/` (also: `FFF_ENABLE_ROOT_SCAN=1` env). FFF refuses to init at the filesystem root by default.
 - `--fff-enable-home-scan` — index the home directory when launched from `$HOME` (also: `FFF_ENABLE_HOME_SCAN` env). Enabled by default. Disable with `--fff-enable-home-scan=false` or `FFF_ENABLE_HOME_SCAN=0` if your `$HOME` contains huge trees (toolchains, kernel sources, build outputs) that make the background index run for a long time. When launched from `$HOME` with this enabled, pi shows a warning that the whole home tree is being indexed.
+- `--fff-warn-home-scan` — show the warning notification when `$HOME` is indexed (also: `FFF_WARN_HOME_SCAN` env). Enabled by default. Disable with `--fff-warn-home-scan=false`, `FFF_WARN_HOME_SCAN=0`, or `"warnOnHomeDirScan": false` in `pi-fff.json`. Indexing and the footer status are unaffected.
+- `--fff-follow-symlinks` — index through directory symlinks (also: `FFF_FOLLOW_SYMLINKS` env, or `"followSymlinks"` in `pi-fff.json`). Enabled by default: trees that reach their real files through links — a git worktree whose `docs/` links back to the main checkout, or a stowed dotfiles layout — would otherwise be missing from `@`-mentions and from find/grep with no visible sign. Disable with `--fff-follow-symlinks=false` or `FFF_FOLLOW_SYMLINKS=0` to keep the walk inside the real tree, which is worth doing when a linked target pulls in a large tree outside the workspace. Symlink cycles are detected and broken by the walker.
 
 ## Data
 
@@ -147,11 +186,12 @@ Each path is resolved independently, in this order:
 
 1. CLI flag — `--fff-frecency-db` / `--fff-history-db`
 2. Env var — `FFF_FRECENCY_DB` / `FFF_HISTORY_DB`
-3. An existing [fff.nvim](https://github.com/dmtrKovalenko/fff.nvim) database, so pi reuses the frecency you built up in your editor:
+3. Global config — `frecencyDbPath` / `historyDbPath`
+4. An existing [fff.nvim](https://github.com/dmtrKovalenko/fff.nvim) database, so pi reuses the frecency you built up in your editor:
    - frecency: `$XDG_CACHE_HOME/nvim/fff_nvim`
    - history: `$XDG_DATA_HOME/nvim/fff_queries`
    - `XDG_CACHE_HOME` defaults to `~/.cache` and `XDG_DATA_HOME` to `~/.local/share`; on Windows both fall back under `%LOCALAPPDATA%\nvim-data`. Only directories count — a plain file at those paths is ignored.
-4. pi-local directory, created on demand — `$PI_CODING_AGENT_DIR/fff/{frecency,history}`, defaulting to `~/.pi/agent/fff/{frecency,history}`
+5. pi-local directory, created on demand — `$PI_CODING_AGENT_DIR/fff/{frecency,history}`, defaulting to `~/.pi/agent/fff/{frecency,history}`
 
 The extension only reads these databases; it never records the agent's own searches into your Neovim history. If a database cannot be opened, the finder starts without persistence and pi shows a warning instead of failing.
 

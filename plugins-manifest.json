@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-28T08:07:28Z",
+  "updatedAt": "2026-08-31T02:31:56Z",
   "plugins": {
     "npm": {
       "@cortexkit/pi-magic-context": {
-        "version": "0.40.1",
-        "resolved": "https://registry.npmjs.org/@cortexkit%2fpi-magic-context/-/@cortexkit%2fpi-magic-context-0.40.1.tgz",
+        "version": "0.41.0",
+        "resolved": "https://registry.npmjs.org/@cortexkit%2fpi-magic-context/-/@cortexkit%2fpi-magic-context-0.41.0.tgz",
         "dir": "extensions/npm/@cortexkit/pi-magic-context"
       },
       "@ff-labs/pi-fff": {
-        "version": "0.10.5",
-        "resolved": "https://registry.npmjs.org/@ff-labs%2fpi-fff/-/@ff-labs%2fpi-fff-0.10.5.tgz",
+        "version": "0.10.6",
+        "resolved": "https://registry.npmjs.org/@ff-labs%2fpi-fff/-/@ff-labs%2fpi-fff-0.10.6.tgz",
         "dir": "extensions/npm/@ff-labs/pi-fff"
       },
       "@gotgenes/pi-permission-system": {
-        "version": "27.1.1",
-        "resolved": "https://registry.npmjs.org/@gotgenes%2fpi-permission-system/-/@gotgenes%2fpi-permission-system-27.1.1.tgz",
+        "version": "29.0.0",
+        "resolved": "https://registry.npmjs.org/@gotgenes%2fpi-permission-system/-/@gotgenes%2fpi-permission-system-29.0.0.tgz",
         "dir": "extensions/npm/@gotgenes/pi-permission-system"
       },
       "@juanibiapina/pi-extension-settings": {
@@ -29,18 +29,18 @@
         "dir": "extensions/npm/@juanibiapina/pi-powerbar"
       },
       "@juicesharp/rpiv-ask-user-question": {
-        "version": "2.7.1",
-        "resolved": "https://registry.npmjs.org/@juicesharp%2frpiv-ask-user-question/-/@juicesharp%2frpiv-ask-user-question-2.7.1.tgz",
+        "version": "2.8.0",
+        "resolved": "https://registry.npmjs.org/@juicesharp%2frpiv-ask-user-question/-/@juicesharp%2frpiv-ask-user-question-2.8.0.tgz",
         "dir": "extensions/npm/@juicesharp/rpiv-ask-user-question"
       },
       "@juicesharp/rpiv-todo": {
-        "version": "2.7.1",
-        "resolved": "https://registry.npmjs.org/@juicesharp%2frpiv-todo/-/@juicesharp%2frpiv-todo-2.7.1.tgz",
+        "version": "2.8.0",
+        "resolved": "https://registry.npmjs.org/@juicesharp%2frpiv-todo/-/@juicesharp%2frpiv-todo-2.8.0.tgz",
         "dir": "extensions/npm/@juicesharp/rpiv-todo"
       },
       "@narumitw/pi-btw": {
-        "version": "0.55.4",
-        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-btw/-/@narumitw%2fpi-btw-0.55.4.tgz",
+        "version": "0.56.0",
+        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-btw/-/@narumitw%2fpi-btw-0.56.0.tgz",
         "dir": "extensions/npm/@narumitw/pi-btw"
       },
       "@narumitw/pi-caffeinate": {
@@ -59,13 +59,13 @@
         "dir": "extensions/npm/@narumitw/pi-lsp"
       },
       "@narumitw/pi-plan-mode": {
-        "version": "0.55.3",
-        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-plan-mode/-/@narumitw%2fpi-plan-mode-0.55.3.tgz",
+        "version": "0.56.0",
+        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-plan-mode/-/@narumitw%2fpi-plan-mode-0.56.0.tgz",
         "dir": "extensions/npm/@narumitw/pi-plan-mode"
       },
       "@narumitw/pi-subagents": {
-        "version": "2.1.4",
-        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-subagents/-/@narumitw%2fpi-subagents-2.1.4.tgz",
+        "version": "3.0.0",
+        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-subagents/-/@narumitw%2fpi-subagents-3.0.0.tgz",
         "dir": "extensions/npm/@narumitw/pi-subagents"
       },
       "@tmustier/pi-raw-paste": {
@@ -99,13 +99,13 @@
         "dir": "extensions/npm/pi-cache-optimizer"
       },
       "pi-hashline-edit-pro": {
-        "version": "2.7.2",
-        "resolved": "https://registry.npmjs.org/pi-hashline-edit-pro/-/pi-hashline-edit-pro-2.7.2.tgz",
+        "version": "2.8.3",
+        "resolved": "https://registry.npmjs.org/pi-hashline-edit-pro/-/pi-hashline-edit-pro-2.8.3.tgz",
         "dir": "extensions/npm/pi-hashline-edit-pro"
       },
       "pi-mcp-adapter": {
-        "version": "2.30.0",
-        "resolved": "https://registry.npmjs.org/pi-mcp-adapter/-/pi-mcp-adapter-2.30.0.tgz",
+        "version": "2.31.0",
+        "resolved": "https://registry.npmjs.org/pi-mcp-adapter/-/pi-mcp-adapter-2.31.0.tgz",
         "dir": "extensions/npm/pi-mcp-adapter"
       },
       "pi-rtk-optimizer": {
@@ -119,8 +119,8 @@
         "dir": "extensions/npm/pi-slopchop"
       },
       "pi-web-access": {
-        "version": "0.26.0",
-        "resolved": "https://registry.npmjs.org/pi-web-access/-/pi-web-access-0.26.0.tgz",
+        "version": "0.27.0",
+        "resolved": "https://registry.npmjs.org/pi-web-access/-/pi-web-access-0.27.0.tgz",
         "dir": "extensions/npm/pi-web-access"
       },
       "pi-workspace-history": {

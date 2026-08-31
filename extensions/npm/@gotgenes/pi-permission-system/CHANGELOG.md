@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [29.0.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v28.0.1...pi-permission-system-v29.0.0) (2026-08-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pi-permission-system:** `getRootPermissionsService()`, `publishRootPermissionsService()`, and `unpublishRootPermissionsService()` are removed. Resolve a node's service with `getPermissionsService(sessionId)`, taking `sessionId` from the `permissions:ready` payload (or from `ctx.sessionManager.getSessionId()` inside your own session handler). See docs/migration/0796-remove-process-root-slot.md.
+
+### Features
+
+* **pi-permission-system:** remove the deprecated process-root service accessor ([65cbbee](https://github.com/gotgenes/pi-packages/commit/65cbbee5b4d98a8f34e34b831ad4a33250735f7e)), closes [#796](https://github.com/gotgenes/pi-packages/issues/796)
+
+
+### Documentation
+
+* **pi-permission-system:** retire the process-root service slot from the docs ([649b1f0](https://github.com/gotgenes/pi-packages/commit/649b1f063a840e9a7c1f259ed03620a71624e55f)), closes [#796](https://github.com/gotgenes/pi-packages/issues/796)
+
+## [28.0.1](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v28.0.0...pi-permission-system-v28.0.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **pi-permission-system:** carry a serving session's deny reason to the requesting agent ([b2010d7](https://github.com/gotgenes/pi-packages/commit/b2010d7bfbf766592b4ae0b98f16a612f96ff706)), closes [#844](https://github.com/gotgenes/pi-packages/issues/844)
+* **pi-permission-system:** name the rule that refused a forwarded call instead of blaming the user ([3d83641](https://github.com/gotgenes/pi-packages/commit/3d83641ad9bf6b045a86a4fb2879a7761c0aefc3)), closes [#844](https://github.com/gotgenes/pi-packages/issues/844)
+* **pi-permission-system:** tell the agent when the permission authority failed to answer ([8f70380](https://github.com/gotgenes/pi-packages/commit/8f70380005733546fa2df1d8694c50985332de19)), closes [#844](https://github.com/gotgenes/pi-packages/issues/844)
+
+## [28.0.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v27.1.3...pi-permission-system-v28.0.0) (2026-08-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pi-permission-system:** `PermissionDecisionResolution` gains `authorizer_allowed` and `authorizer_denied`, and existing decisions change which resolution they report. An ask decided by a registered `authorizerChain` link now reports `authorizer_allowed` / `authorizer_denied` instead of `user_approved` / `user_denied`, and a subagent's ask answered by its parent reports what decided inside that parent — `policy_allow` / `policy_deny` for a rule, `authorizer_*` for a link — instead of attributing it to the user. Consumers switching exhaustively over `resolution` must handle the two new values; a consumer counting `user_denied` as human interactions now gets the accurate count rather than one inflated by machine decisions.
+
+### Features
+
+* **pi-permission-system:** broadcast the decider that actually resolved a permission ask ([1b92386](https://github.com/gotgenes/pi-packages/commit/1b923863a00284c7bd6ca9bef5307ad83db0677d)), closes [#772](https://github.com/gotgenes/pi-packages/issues/772)
+
+
+### Bug Fixes
+
+* **pi-permission-system:** tell the agent which authorizer refused its call ([412189b](https://github.com/gotgenes/pi-packages/commit/412189b4e32db3ca419d030c1b2195532e8ebbd4)), closes [#772](https://github.com/gotgenes/pi-packages/issues/772)
+
+
+### Documentation
+
+* **pi-permission-system:** record decision attribution and mark Phase 14 Step 5 complete ([b31f5d5](https://github.com/gotgenes/pi-packages/commit/b31f5d56d61727ab8bd146c2dfe83ce85aa7eef5)), closes [#772](https://github.com/gotgenes/pi-packages/issues/772)
+
+## [27.1.3](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v27.1.2...pi-permission-system-v27.1.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* **pi-permission-system:** gate commands hosted by declarations, test commands, and assignments ([dfde822](https://github.com/gotgenes/pi-packages/commit/dfde8227d3bf11de5258dcbe376dd0b8b75045e0)), closes [#742](https://github.com/gotgenes/pi-packages/issues/742)
+* **pi-permission-system:** gate commands inside a for loop's body and word list ([6e96464](https://github.com/gotgenes/pi-packages/commit/6e9646486db849afdf80819150a203d293b3847c)), closes [#742](https://github.com/gotgenes/pi-packages/issues/742)
+* **pi-permission-system:** gate commands inside control-flow bodies and function definitions ([3a2f232](https://github.com/gotgenes/pi-packages/commit/3a2f232d9c12588ea1feacf41cade0e56e66a44b)), closes [#742](https://github.com/gotgenes/pi-packages/issues/742)
+* **pi-permission-system:** project a command-name substitution's path operands ([9807d44](https://github.com/gotgenes/pi-packages/commit/9807d444b6d81526b01bc542cd4a829a1b2640c3)), closes [#742](https://github.com/gotgenes/pi-packages/issues/742)
+
+
+### Documentation
+
+* **pi-permission-system:** bound the path-slice claim on behavior, not diff footprint ([91ef5c9](https://github.com/gotgenes/pi-packages/commit/91ef5c9f2d0578fb64fe317bcddd3ec7d9418d4c)), closes [#742](https://github.com/gotgenes/pi-packages/issues/742)
+* **pi-permission-system:** commit the instrument behind Step 4's measurement ([e634c2c](https://github.com/gotgenes/pi-packages/commit/e634c2cf068340cc0deae86648330e44c2741f06)), closes [#742](https://github.com/gotgenes/pi-packages/issues/742)
+
+## [27.1.2](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v27.1.1...pi-permission-system-v27.1.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **pi-permission-system:** claim no arity for awk's long forms, whose parser the bare name does not fix ([#823](https://github.com/gotgenes/pi-packages/issues/823)) ([6c8e4a0](https://github.com/gotgenes/pi-packages/commit/6c8e4a0b813d17750296cbd065aec20377c82d2a))
+* **pi-permission-system:** discharge a flag argument on whatever node type follows ([#823](https://github.com/gotgenes/pi-packages/issues/823)) ([228f6fb](https://github.com/gotgenes/pi-packages/commit/228f6fb235310b304557ec501567373e33d4cfab))
+* **pi-permission-system:** read --context per tool, whose arity differs between grep and rg ([#823](https://github.com/gotgenes/pi-packages/issues/823)) ([bba8317](https://github.com/gotgenes/pi-packages/commit/bba83175d1f9f8079cd9613412c65868e4a2fa09))
+* **pi-permission-system:** read awk's long forms only for gawk ([#823](https://github.com/gotgenes/pi-packages/issues/823)) ([52488f0](https://github.com/gotgenes/pi-packages/commit/52488f02cc902b8669f893cc1cfee090482f2e72))
+* **pi-permission-system:** recognize the long, embedded, and glued spellings of a pattern-first flag ([#823](https://github.com/gotgenes/pi-packages/issues/823)) ([ce7b65e](https://github.com/gotgenes/pi-packages/commit/ce7b65eb607cc2e6f61a6eceda1d1a9bb22aea85))
+* **pi-permission-system:** spend a pattern positional on a computed or numeric pattern ([#823](https://github.com/gotgenes/pi-packages/issues/823)) ([dce4d3f](https://github.com/gotgenes/pi-packages/commit/dce4d3f06b164f6f45df3c5550ec624f3acba896))
+
+
+### Documentation
+
+* **pi-permission-system:** record the optional-argument flag residuals ([#823](https://github.com/gotgenes/pi-packages/issues/823)) ([94e51fc](https://github.com/gotgenes/pi-packages/commit/94e51fc5a05acf3b2c4bc49479b45b0b7797b9ac))
+
 ## [27.1.1](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v27.1.0...pi-permission-system-v27.1.1) (2026-08-28)
 
 

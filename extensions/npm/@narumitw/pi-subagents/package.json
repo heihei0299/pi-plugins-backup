@@ -1,7 +1,7 @@
 {
 	"name": "@narumitw/pi-subagents",
-	"version": "2.1.4",
-	"description": "Pi extension for delegating work to specialized isolated subagents.",
+	"version": "3.0.0",
+	"description": "Subagent jobs with asynchronous main-agent messaging for Pi.",
 	"type": "module",
 	"license": "MIT",
 	"private": false,
@@ -11,7 +11,7 @@
 		"pi",
 		"subagents",
 		"agents",
-		"automation"
+		"delegation"
 	],
 	"files": [
 		"src",
@@ -25,36 +25,28 @@
 			"./dist/index.ts"
 		]
 	},
-	"piExtension": {
-		"lifecycle": "stable"
-	},
 	"scripts": {
 		"build": "node scripts/build-runtime.mjs",
 		"check": "npm run build && biome check . && npm run typecheck",
 		"format": "biome check --write .",
-		"prepack": "npm run build",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"prepack": "npm run build"
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-agent-core": "*",
 		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*",
 		"@earendil-works/pi-tui": "*",
 		"typebox": "*"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.10",
-		"@earendil-works/pi-agent-core": "0.84.3",
-		"@earendil-works/pi-ai": "0.84.3",
-		"@earendil-works/pi-coding-agent": "0.84.3",
-		"@earendil-works/pi-tui": "0.84.3",
+		"@biomejs/biome": "2.5.11",
+		"@earendil-works/pi-ai": "0.84.4",
+		"@earendil-works/pi-coding-agent": "0.84.4",
+		"@earendil-works/pi-tui": "0.84.4",
+		"@types/node": "26.4.0",
 		"esbuild": "0.28.2",
-		"typebox": "1.3.18",
+		"typebox": "1.3.20",
 		"typescript": "7.0.2"
-	},
-	"dependencies": {
-		"@narumitw/pi-tui-kit": "^0.59.0",
-		"proper-lockfile": "^4.1.2"
 	},
 	"repository": {
 		"type": "git",

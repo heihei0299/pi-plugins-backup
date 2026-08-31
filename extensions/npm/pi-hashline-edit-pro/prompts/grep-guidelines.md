@@ -1,7 +1,3 @@
-- `grep`: results carry anchors recorded like read output, so you can target them with replace or insert immediately.
-- `grep`: pass `path` for a single file or directory; the default is the current working directory. Directory searches skip node_modules, .git, .tmp, and coverage.
-- `grep`: use `literal: true` when the pattern contains regex metacharacters you want matched literally.
-- `grep`: use `context` to see surrounding lines; context rows carry anchors too.
-- `grep`: use `glob` to filter files; `*` matches across directories, e.g. `*.ts` or `**/*.spec.ts`.
-- `grep`: results are capped at `limit` matches (default 100), 2000 rows, and 50KB; refine the pattern or raise limit to see more.
-- `grep`: a matched line longer than 500 bytes is shown as a fragment around the match with `...` marking the truncated sides; the row keeps its anchor and is editable with replace (which replaces the whole line). Use read to see the full line.
+- `anchor_grep`: every hit and `context` line comes back as `lineNumber │ anchor│content` — the `anchor│content` part is usable directly for `replace`/`insert` without a new `read`, while `lineNumber` enables jump-to-line.
+- `anchor_grep`: uses ripgrep, respects `.gitignore`; use `path` for file or folder (default cwd), `glob` like `*.ts` to filter, `literal:true` for literal text, `context:N` for surrounding lines.
+- `anchor_grep`: `.git` is always skipped; `node_modules`/`.tmp`/`coverage` are skipped only when a `.gitignore` lists them; binary/image files are skipped.

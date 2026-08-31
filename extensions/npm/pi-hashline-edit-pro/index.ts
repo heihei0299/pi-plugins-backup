@@ -12,15 +12,17 @@ import { MAX_HASH_LINES } from "./src/hashline";
 import {
   readConfig,
   toggleAutoRead,
+  toggleAnchorGrep,
 } from "./src/config";
 import { loadHashStore, pruneMissing } from "./src/hash-store";
-import { recordServedSafe, clearServed } from "./src/served";
+import { recordServedSafe, clearServed, buildServedMap } from "./src/served";
 import { clearBoundaryBypass } from "./src/boundary-bypass";
+import { registerWriteHook } from "./src/write-hook";
 import { readNormFile } from "./src/file-reader";
 import { loadFileKindAndText } from "./src/file-kind";
-import { toCwd } from "./src/paths";
-import { resolveTarget } from "./src/fs-write";
+import { resolveInCwd } from "./src/fs-write";
 import { valAccess } from "./src/validation";
+import { splitLines } from "./src/utils";
 
 export default function (pi: ExtensionAPI): void {
   regRead(pi);
@@ -29,21 +31,32 @@ export default function (pi: ExtensionAPI): void {
   regInsert(pi);
   regGrep(pi);
   regUndo(pi);
+  registerWriteHook(pi);
 
   let autoRead = true;
+  let grepWasActive = false;
 
   pi.on("session_start", async (_event, ctx) => {
     const active = pi.getActiveTools();
+    grepWasActive = active.includes("grep");
     pi.setActiveTools(active.filter((t) => t !== "edit"));
     await initHasher();
-    try {
-      const store = await loadHashStore();
-      await pruneMissing(store);
-    } catch (err) {
-      console.error("Failed to load or prune hash store:", err);
-    }
+    loadHashStore()
+      .then(store =>
+        pruneMissing(store).catch(err => {
+          console.error("Failed to prune hash store:", err);
+        }),
+      )
+      .catch(err => {
+        console.error("Failed to load hash store:", err);
+      });
     const config = await readConfig();
     autoRead = config.autoRead;
+    pi.setActiveTools(
+      pi.getActiveTools().filter((t) =>
+        config.anchorGrepEnabled ? t !== "grep" : t !== "anchor_grep",
+      ),
+    );
     const debugValue = process.env.PI_HASHLINE_DEBUG;
     if (debugValue === "1" || debugValue === "true") {
       ctx.ui.notify(`Hashline Edit mode active`, "info");
@@ -59,6 +72,21 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("toggle-anchor-grep", {
+    description: "Enable or disable the anchor_grep tool (the built-in grep is disabled while anchor_grep is on)",
+    handler: async (_args, ctx) => {
+      const enabled = await toggleAnchorGrep();
+      const active = pi.getActiveTools();
+      pi.setActiveTools(
+        enabled
+          ? [...new Set([...active.filter((t) => t !== "grep"), "anchor_grep"])]
+          : [...new Set([...active.filter((t) => t !== "anchor_grep"), ...(grepWasActive ? ["grep"] : [])])],
+      );
+      const state = enabled ? "enabled" : "disabled";
+      ctx.ui.notify(`anchor_grep tool ${state}`, "info");
+    },
+  });
+
   pi.on("tool_result", async (event, ctx) => {
     if (event.isError) return;
 
@@ -67,7 +95,7 @@ export default function (pi: ExtensionAPI): void {
       let resolvedPath: string | undefined;
       if (typeof writtenPath === "string") {
         try {
-          resolvedPath = await resolveTarget(toCwd(writtenPath, ctx.cwd));
+          resolvedPath = (await resolveInCwd(writtenPath, ctx.cwd)).resolved;
           await clearUndo(resolvedPath);
           clearBoundaryBypass(resolvedPath);
           const store = await loadHashStore();
@@ -79,7 +107,7 @@ export default function (pi: ExtensionAPI): void {
       if (!autoRead) return;
       if (typeof writtenPath !== "string") return;
       try {
-        resolvedPath ??= await resolveTarget(toCwd(writtenPath, ctx.cwd));
+        resolvedPath ??= (await resolveInCwd(writtenPath, ctx.cwd)).resolved;
         await valAccess(resolvedPath, writtenPath);
         const file = await loadFileKindAndText(resolvedPath, { maxLines: MAX_HASH_LINES, displayPath: writtenPath });
         if (file.kind !== "text") return;
@@ -94,7 +122,9 @@ export default function (pi: ExtensionAPI): void {
           DEFAULT_MAX_BYTES,
           DEFAULT_MAX_LINES,
         );
-        await recordServedSafe(absolutePath, preview.servedHashes, "auto-read", new Set(fileHashes));
+        const fileLines = splitLines(normalized);
+        const servedMap = buildServedMap(fileHashes, fileLines, preview.servedHashes);
+        await recordServedSafe(absolutePath, servedMap, "auto-read", new Set(fileHashes));
         return {
           content: [
             ...(event.content ?? []),
@@ -124,7 +154,8 @@ export default function (pi: ExtensionAPI): void {
     if (metrics?.classification === "noop") return;
 
     const diff = (event.details as { diff?: string } | undefined)?.diff;
-    if (!diff) return;
+    if (typeof diff !== "string") return;
+    const hasDiff = diff.length > 0;
 
     const rendered = (event.content ?? [])
       .filter(
@@ -134,11 +165,12 @@ export default function (pi: ExtensionAPI): void {
       .map((entry) => entry.text)
       .join("\n");
     const warnings = extractWarnings(rendered);
+    const hint = hasDiff ? (warnings ? `${diff}\n\n${warnings}` : diff) : warnings ? `[post-edit] applied successfully; the diff is empty (whitespace-only change).\n\n${warnings}` : "[post-edit] applied successfully; the diff is empty (whitespace-only change).";
     return {
       content: [
         {
           type: "text",
-          text: warnings ? `${diff}\n\n${warnings}` : diff,
+          text: hint,
         },
       ],
     };

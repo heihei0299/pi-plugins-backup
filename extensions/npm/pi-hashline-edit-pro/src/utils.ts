@@ -106,7 +106,65 @@ export function truncateToBytes(s: string, maxBytes: number): string {
 	return out;
 }
 
+export function getCached<K, V>(map: Map<K, V>, key: K, compute: (key: K) => V): V {
+	if (map.has(key)) return map.get(key)!;
+	const v = compute(key);
+	map.set(key, v);
+	return v;
+}
+
+export function isHashRow(line: string): boolean {
+	return /^[A-Za-z0-9]{3}│/.test(line);
+}
+
+function gutterWidth(max: number, fallback: number): number {
+	return String(max || fallback).length;
+}
+
+function formatGutter(n: number, width: number): string {
+	return String(n).padStart(width) + " │ ";
+}
+
+function blankGutter(width: number): string {
+	return " ".repeat(width) + " │ ";
+}
+
+export function numberedRead(text: string, offset: number): string {
+	const lines = text.split("\n");
+	const hashLines = lines.filter(isHashRow).length;
+	const max = hashLines > 0 ? offset + hashLines - 1 : offset;
+	const width = gutterWidth(max, offset);
+	let n = offset;
+	return lines.map((line) => {
+		if (!isHashRow(line)) return line;
+		const prefix = formatGutter(n++, width);
+		return prefix + line;
+	}).join("\n");
+}
+
+export function withLineNumbers(text: string, numbers: (number|undefined)[]): string {
+	const lines = text.split("\n");
+	const nums = numbers ?? [];
+	const max = nums.reduce<number>((m, n) => n !== undefined && n > m ? n : m, 0);
+	const width = gutterWidth(max, lines.length);
+	return lines.map((line, i) => {
+		const n = nums[i];
+		const prefix = n !== undefined ? formatGutter(n, width) : blankGutter(width);
+		return prefix + line;
+	}).join("\n");
+}
 export function clipLine(line: string, maxLen = 200): string {
 	const flat = line.replace(/\n/g, "\\n");
 	return flat.length > maxLen ? `${flat.slice(0, maxLen)}...` : flat;
+}
+export function assertLineLimit(content: string, displayPath: string, limit: number): void {
+	const count = splitLines(content).length;
+	if (count > limit) throw new Error(formatLineLimit(displayPath, limit, count));
+}
+export function lineLimitMoreThanMessage(displayPath: string, limit: number): string {
+	return formatLineLimit(displayPath, limit, undefined);
+}
+function formatLineLimit(displayPath: string, limit: number, count: number | undefined): string {
+	const detail = count === undefined ? `has more than ${limit}` : `has ${count}`;
+	return `[E_FILE_TOO_LARGE] ${displayPath} ${detail} lines, exceeding the ${limit}-line hashline limit. For very large files, use write.`;
 }

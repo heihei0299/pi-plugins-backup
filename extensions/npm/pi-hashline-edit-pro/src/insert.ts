@@ -1,20 +1,17 @@
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { constants } from "fs";
-import { execPipeline, type ReqParams, type ReplaceDetails } from "./replace";
+import { execPipeline, type ReqParams, type ReplaceDetails, previewFromPipe, previewError } from "./replace";
 import { commitEdit } from "./commit";
 import { readNormFile, type NormFile } from "./file-reader";
-import { resolveTarget } from "./fs-write";
 import { MAX_HASH_LINES, parseHashRef, resolveAnchorLine, type Anchor } from "./hashline";
 import { stripAnchorRow } from "./hashline/resolve";
-import { toCwd } from "./paths";
 import { loadP, loadGuide } from "./prompts";
-import { normReq } from "./replace-normalize";
-import { genDiff } from "./replace-diff";
-import { makeRenderCall, renderEditResult, type RPreview, type RRState } from "./replace-render";
-import { abortIf, isRec, makePrepareArguments, rejectUnknownFields, splitLines } from "./utils";
+import { normReq } from "./payload-contract";
+import { isRec, rejectUnknownFields, splitLines } from "./utils";
 import { clearBoundaryBypass } from "./boundary-bypass";
+import type { RPreview, RRState } from "./replace-render";
+import { queuedEdit, editToolBase, editRenderCallWrapper, editRenderResultWrapper } from "./edit-common";
 
 const INSERT_KS = new Set(["path", "anchor", "direction", "lines"]);
 
@@ -121,12 +118,9 @@ export async function insertPreview(request: unknown, cwd: string): Promise<RPre
       preloadedNorm: preload,
       skipBoundaryDedup: true,
     });
-    if (pipe.originalNormalized === pipe.result) {
-      return { error: `No changes made to ${normalized.path}. The edit produced identical content.` };
-    }
-    return { diff: genDiff(pipe.originalNormalized, pipe.result, 4, pipe.resultHashes, pipe.originalHashes).diff };
+    return previewFromPipe(pipe);
   } catch (error: unknown) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return previewError(error);
   }
 }
 
@@ -163,32 +157,17 @@ export function buildInsertToolDef(): InsertToolDef {
     description: loadP("../prompts/insert.md"),
     promptSnippet: loadP("../prompts/insert-snippet.md"),
     promptGuidelines: loadGuide("../prompts/insert-guidelines.md"),
-    prepareArguments: makePrepareArguments(),
+    ...editToolBase,
     parameters: insertToolSchema,
-    renderShell: "default",
-    renderCall: makeRenderCall(insertPreview, { getInput: getInsertInput, toolName: "insert" }),
-    renderResult(result, { isPartial }, theme, context) {
-      return renderEditResult(
-        result as {
-          content?: Array<{ type: string; text?: string }>;
-          details?: ReplaceDetails;
-        },
-        isPartial,
-        theme,
-        context,
-      );
-    },
-
+    renderCall: editRenderCallWrapper(insertPreview, getInsertInput, "insert"),
+    renderResult: editRenderResultWrapper,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const canonical = normReq(params);
       assertInsertReq(canonical);
       const req = canonical;
       const path = req.path;
       const { ref, warnings: anchorWarnings } = parseInsertAnchor(req.anchor);
-      const absolutePath = toCwd(path, ctx.cwd);
-      const mutationTargetPath = await resolveTarget(absolutePath);
-      return withFileMutationQueue(mutationTargetPath, async () => {
-        abortIf(signal);
+      return queuedEdit(path, ctx.cwd, signal, async (absolutePath, mutationTargetPath) => {
         const preload = await readNormFile(path, ctx.cwd, {
           signal,
           accessMode: constants.R_OK | constants.W_OK,

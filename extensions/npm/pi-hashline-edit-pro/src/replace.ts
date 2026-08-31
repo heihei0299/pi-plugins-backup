@@ -2,17 +2,16 @@ import type {
   ExtensionAPI,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import { constants } from "fs";
 import {
   genDiff,
   type LineEnding,
 } from "./replace-diff";
 import { readNormFile, type NormFile } from "./file-reader";
-import { normReq } from "./replace-normalize";
-import { isRec, rejectUnknownFields, abortIf, makePrepareArguments } from "./utils";
-import { resolveTarget } from "./fs-write";
+import { editToolSchema, type ReqParams, assertReq, normReq } from "./payload-contract";
+import { isRec } from "./utils";
+import { loadP, loadGuide } from "./prompts";
+import { type FileIdentity } from "./fs-write";
 import { applyEdit,
   lineHashes,
   resEdit,
@@ -23,54 +22,18 @@ import { applyEdit,
   type HEdit,
   type NEdit,
 } from "./hashline";
-import { toCwd } from "./paths";
+import { commitEdit } from "./commit";
 import type { RMetrics } from "./replace-response";
 import {
-  makeRenderCall,
-  renderEditResult,
   type RPreview,
   type RRState,
 } from "./replace-render";
-import { loadP, loadGuide } from "./prompts";
 import { loadHashStore, findSnapshotPaths, findServedPaths, type HashStore } from "./hash-store";
 import { getServed, recordServedSafe } from "./served";
 import { noopPayloadKey, markBoundaryNoop, consumeBoundaryBypass, clearBoundaryBypass } from "./boundary-bypass";
-import { commitEdit } from "./commit";
+import { queuedEdit, editToolBase, editRenderCallWrapper, editRenderResultWrapper } from "./edit-common";
 
-const replacementLinesSchema = Type.Array(
-  Type.String({
-    description:
-      "One replacement line. Each element is exactly one line; do not embed \\n inside an element: use separate elements.",
-  }),
-  {
-    description:
-      "Replacement lines as an array of strings, one element per line. Use [] to delete the range."
-  }
-);
-
-const removeFromSchema = Type.String({
-  description: "Bare 3-char anchor only (e.g. \"aB3\"): copy just the anchor from the leftmost column of a read row like `aB3│content`; never the line content. Marks the FIRST line to remove (inclusive)",
-});
-
-const removeToSchema = Type.String({
-  description: "Bare 3-char anchor only (e.g. \"aB3\"): copy just the anchor from the leftmost column of a read row like `aB3│content`; never the line content. Marks the LAST line to remove (inclusive)",
-});
-
-export const editToolSchema = Type.Object(
-  {
-    path: Type.Optional(Type.String({ description: "Path to edit. Required: always provide it explicitly; it is only auto-resolved from the anchors as a fallback when omitted by mistake." })),
-    remove_from: removeFromSchema,
-    remove_to: removeToSchema,
-    replacement_lines: replacementLinesSchema,
-  },
-  { additionalProperties: false },
-);
-export type ReqParams = {
-  path: string;
-  remove_from: string;
-  remove_to: string;
-  replacement_lines: string[];
-};
+export { editToolSchema, type ReqParams, assertReq };
 
 export type ReplaceDetails = {
   diff: string;
@@ -80,6 +43,7 @@ export type ReplaceDetails = {
   snapshotId?: string;
   classification?: "noop";
   metrics?: RMetrics;
+  diffLineNumbers?: (number|undefined)[];
 };
 
 export interface PipelineResult {
@@ -99,33 +63,7 @@ export interface PipelineResult {
   totalRemovedLines: number;
   hadBoundaryDedup: boolean;
   boundaryRemovedLines: number;
-}
-
-const ROOT_KS = new Set(["path", "remove_from", "remove_to", "replacement_lines"]);
-
-export function assertReq(
-  request: unknown,
-): asserts request is ReqParams {
-  if (!isRec(request)) {
-    throw new Error("[E_BAD_SHAPE] Edit request must be an object.");
-  }
-
-  rejectUnknownFields(request, ROOT_KS, "Edit request");
-
-  if (typeof request.path !== "string" || request.path.length === 0) {
-    throw new Error('[E_BAD_SHAPE] Edit request requires a non-empty "path" string.');
-  }
-
-  if (
-    typeof request.remove_from !== "string" ||
-    typeof request.remove_to !== "string" ||
-    !Array.isArray(request.replacement_lines) ||
-    request.replacement_lines.some((line) => typeof line !== "string")
-  ) {
-    throw new Error(
-      '[E_BAD_SHAPE] Edit request requires "remove_from", "remove_to", and "replacement_lines" (array of strings, one per line; use [] to delete).',
-    );
-  }
+  identity: FileIdentity;
 }
 
 async function resolveMissingPath(
@@ -173,21 +111,26 @@ export interface ExecPipelineOptions {
   preloadedNorm?: NormFile;
 }
 
+function hashSpan(hashes: string[], from: string, to: string): [number, number] | undefined {
+  const a = hashes.indexOf(from);
+  const b = hashes.indexOf(to);
+  if (a < 0 || b < 0) return undefined;
+  return [Math.min(a, b), Math.max(a, b)];
+}
+async function noteAnchorError(absolutePath: string, error: unknown, scopeHashes: string[], noPersist?: boolean): Promise<void> {
+  if (noPersist === true) return;
+  if (error instanceof RangeStaleError) await recordServedSafe(absolutePath, error.rangeServedMap, "range-stale feedback", new Set(scopeHashes));
+  else if (error instanceof AnchorMismatchError) await recordServedSafe(absolutePath, error.feedbackMap, "anchor-mismatch feedback", new Set(scopeHashes));
+}
+
 function collectRemovedHashes(
   edit: HEdit,
   originalHashes: string[],
 ): Set<string> {
+  const span = hashSpan(originalHashes, edit.hash_bounds[0].hash, edit.hash_bounds[1].hash);
   const removedHashes = new Set<string>();
-  const startHash = edit.hash_bounds[0].hash;
-  const endHash = edit.hash_bounds[1].hash;
-  const startLine = originalHashes.indexOf(startHash);
-  const endLine = originalHashes.indexOf(endHash);
-  if (startLine >= 0 && endLine >= 0) {
-    const firstLine = Math.min(startLine, endLine);
-    const lastLine = Math.max(startLine, endLine);
-    for (let i = firstLine; i <= lastLine; i++) {
-      removedHashes.add(originalHashes[i]!);
-    }
+  if (span) {
+    for (let i = span[0]; i <= span[1]; i++) removedHashes.add(originalHashes[i]!);
   }
   return removedHashes;
 }
@@ -199,12 +142,8 @@ function countLineChanges(
   removedAutoFixes: number,
 ): { totalAddedLines: number; totalRemovedLines: number } {
   if (isNoop) return { totalAddedLines: 0, totalRemovedLines: 0 };
-  let totalRemovedLines = 0;
-  const startLine = originalHashes.indexOf(edit.hash_bounds[0].hash);
-  const endLine = originalHashes.indexOf(edit.hash_bounds[1].hash);
-  if (startLine >= 0 && endLine >= 0) {
-    totalRemovedLines = Math.abs(endLine - startLine) + 1;
-  }
+  const span = hashSpan(originalHashes, edit.hash_bounds[0].hash, edit.hash_bounds[1].hash);
+  const totalRemovedLines = span ? span[1] - span[0] + 1 : 0;
   return {
     totalAddedLines: Math.max(0, edit.content_lines.length - removedAutoFixes),
     totalRemovedLines,
@@ -230,7 +169,7 @@ export async function execPipeline(
   );
 
   const hashStore = options?.store ?? await loadHashStore();
-  const { normalized: originalNormalized, bom, originalEnding, fileHashes: originalHashes, hadUtf8DecodeErrors, absolutePath } = await readNormFile(
+  const { normalized: originalNormalized, bom, originalEnding, fileHashes: originalHashes, hadUtf8DecodeErrors, absolutePath, identity } = await readNormFile(
     path, cwd, { signal: options?.signal, accessMode: options?.accessMode, maxLines: MAX_HASH_LINES, store: hashStore, noPersist: options?.noPersist, preloadedNorm: options?.preloadedNorm },
   );
 
@@ -247,13 +186,7 @@ export async function execPipeline(
       options?.skipBoundaryDedup,
     );
   } catch (error) {
-    if (options?.noPersist !== true) {
-      if (error instanceof RangeStaleError) {
-        await recordServedSafe(absolutePath, error.rangeHashes, "range-stale feedback", new Set(originalHashes));
-      } else if (error instanceof AnchorMismatchError) {
-        await recordServedSafe(absolutePath, error.feedbackHashes, "anchor-mismatch feedback", new Set(originalHashes));
-      }
-    }
+    await noteAnchorError(absolutePath, error, originalHashes, options?.noPersist);
     throw error;
   }
 
@@ -293,9 +226,21 @@ export async function execPipeline(
     totalRemovedLines,
     hadBoundaryDedup: (anchorResult.autoFixes?.length ?? 0) > 0,
     boundaryRemovedLines: anchorResult.autoFixes?.length ?? 0,
+    identity,
   };
 }
 
+export function previewFromPipe(pipe: PipelineResult): RPreview {
+  if (pipe.originalNormalized === pipe.result) {
+    return {
+      error: `No changes made to ${pipe.path}. The edit produced identical content.`,
+    };
+  }
+  return { diff: genDiff(pipe.originalNormalized, pipe.result, 4, pipe.resultHashes, pipe.originalHashes).diff };
+}
+export function previewError(error: unknown): RPreview {
+  return { error: error instanceof Error ? error.message : String(error) };
+}
 export async function compPreview(
   request: unknown,
   cwd: string,
@@ -303,20 +248,14 @@ export async function compPreview(
   try {
     const normalized = normReq(request);
     assertReq(normalized);
-    const { path, originalNormalized, result, resultHashes, originalHashes } = await execPipeline(
+    const pipe = await execPipeline(
       normalized,
       cwd,
       { accessMode: constants.R_OK, noPersist: true },
     );
-    if (originalNormalized === result) {
-      return {
-        error: `No changes made to ${path}. The edit produced identical content.`,
-      };
-    }
-
-    return { diff: genDiff(originalNormalized, result, 4, resultHashes, originalHashes).diff };
+    return previewFromPipe(pipe);
   } catch (error: unknown) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return previewError(error);
   }
 }
 
@@ -326,12 +265,10 @@ type ToolDef = ToolDefinition<
   RRState
 > & { renderShell?: "default" | "self" };
 
-
 export function buildToolDef(): ToolDef {
   const E_DESC = loadP("../prompts/replace.md");
   const E_SNIPPET = loadP("../prompts/replace-snippet.md");
   const E_GUIDE = loadGuide("../prompts/replace-guidelines.md");
-
   const parameters = editToolSchema;
   return {
     name: "replace",
@@ -340,21 +277,9 @@ export function buildToolDef(): ToolDef {
     parameters,
     promptSnippet: E_SNIPPET,
     promptGuidelines: E_GUIDE,
-    prepareArguments: makePrepareArguments(),
-    renderShell: "default",
-    renderCall: makeRenderCall(compPreview),
-    renderResult(result, { isPartial }, theme, context) {
-      return renderEditResult(
-        result as {
-          content?: Array<{ type: string; text?: string }>;
-          details?: ReplaceDetails;
-        },
-        isPartial,
-        theme,
-        context,
-      );
-    },
-
+    ...editToolBase,
+    renderCall: editRenderCallWrapper(compPreview),
+    renderResult: editRenderResultWrapper,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const canonical = normReq(params);
       const resolution = isRec(canonical) ? await resolveMissingPath(canonical) : undefined;
@@ -362,15 +287,11 @@ export function buildToolDef(): ToolDef {
         canonical.path = resolution.path;
       }
       assertReq(canonical);
-
       const normalizedParams = canonical;
       const path = normalizedParams.path;
-      const absolutePath = toCwd(path, ctx.cwd);
-      const mutationTargetPath = await resolveTarget(absolutePath);
-      const noopPayload = noopPayloadKey(mutationTargetPath, normalizedParams.remove_from, normalizedParams.remove_to, normalizedParams.replacement_lines);
-      const boundaryBypass = consumeBoundaryBypass(mutationTargetPath, noopPayload);
-      return withFileMutationQueue(mutationTargetPath, async () => {
-        abortIf(signal);
+      return queuedEdit(path, ctx.cwd, signal, async (absolutePath, mutationTargetPath) => {
+        const noopPayload = noopPayloadKey(mutationTargetPath, normalizedParams.remove_from, normalizedParams.remove_to, normalizedParams.replacement_lines);
+        const boundaryBypass = consumeBoundaryBypass(mutationTargetPath, noopPayload);
         const pipe = await execPipeline(
           normalizedParams,
           ctx.cwd,

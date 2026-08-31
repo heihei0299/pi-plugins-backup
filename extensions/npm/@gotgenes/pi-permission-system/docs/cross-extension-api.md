@@ -49,11 +49,9 @@ Each node therefore publishes its own service at `session_start`, into a `global
 Consumers call `getPermissionsService(sessionId)` to retrieve it — even though their `import()` loads a fresh module copy, the accessor reads from the shared `globalThis` slot.
 The session id arrives as a field on the `permissions:ready` broadcast, which each node emits at its own `session_start`, right after publishing — and again at that node's first `before_agent_start`, so a consumer whose own `session_start` ran later still hears it.
 
-`getRootPermissionsService()` remains, reading a separate legacy slot that holds the **process root's** service, but it is deprecated: in any node but the root it answers the wrong question, handing an in-process child the parent's service.
-Calling it emits a once-guarded Node `DeprecationWarning` (code `PI_PERMISSION_SYSTEM_DEP0001`); run with `--trace-deprecation` to locate your call site, or `--no-deprecation` to silence it.
-Removal is deferred to a future major release.
-
-Both accessors were renamed in the major that reclaimed `getPermissionsService` for the keyed locator; if you are upgrading from a release whose `getPermissionsService()` took no argument, see [migration/0794-keyed-service-locator.md](migration/0794-keyed-service-locator.md).
+That keyed map is the only service slot.
+A separate legacy slot once held the process root's service, read by a deprecated `getRootPermissionsService()`; both were removed, because in any node but the root that accessor answered the wrong question — handing an in-process child the parent's service.
+If you are upgrading from a release that had it, see [migration/0796-remove-process-root-slot.md](migration/0796-remove-process-root-slot.md); if you are upgrading from one whose `getPermissionsService()` took no argument, start with [migration/0794-keyed-service-locator.md](migration/0794-keyed-service-locator.md).
 
 All types below are directly importable and type-check with `tsc` out of the box.
 `@gotgenes/pi-permission-system`'s published `exports` resolve `import type { … }` to a self-contained, bundled declaration file with no internal module references, so a downstream `tsconfig.json` needs no special path configuration.
@@ -301,7 +299,7 @@ Best practice: resolve the service per use rather than caching the reference.
 The `import()` throws if the package is not installed.
 Wrap both in `try/catch` + `if` guard as shown in the Quick Start example.
 
-It also returns `undefined` when called with no session id at all — a shape TypeScript rejects but JavaScript reaches — rather than falling back to the process root's service, since answering with another node's service is the defect the keyed locator exists to prevent.
+It also returns `undefined` when called with no session id at all — a shape TypeScript rejects but JavaScript reaches — rather than guessing a node, since answering with another node's service is the defect the keyed locator exists to prevent.
 That call emits a once-guarded Node warning (code `PI_PERMISSION_SYSTEM_WARN0001`), because the guard above turns the missing service into a registration that silently never happens.
 It is deliberately not a `DeprecationWarning`: `--no-deprecation` does not silence it.
 
@@ -420,6 +418,8 @@ A session serving another session's forwarded request emits one too, on its own 
 That is what makes a forwarded prompt clearable: the ask is gated in the requesting session — a different process for an out-of-process subagent — so without it the serving session broadcasts a `permissions:ui_prompt` whose outcome never appears.
 A forwarded request the serving session's own policy allows or denies is answered without a prompt and broadcasts nothing, matching the UI-prompt channel.
 A served decision carries a non-null `forwarding` context; the requesting session still emits its own decision when the answer comes back.
+That requesting-side decision is attributed to whatever decided **inside** the responding session: a rule there reports `policy_allow` / `policy_deny`, a chain link reports `authorizer_allowed` / `authorizer_denied`, and a human there reports `user_approved` / `user_denied`.
+The `resolution` names what decided, never where.
 
 The `requestId` is the same id the request's review-log entries carry, and the same one `permissions:ui_prompt` carried if the request reached a prompt — so a prompt and its outcome are joinable, as are two concurrent prompts for the same command.
 A request that reaches a prompt is answered by exactly one terminal event on that prompt's own bus, including when the dialog itself fails.
@@ -460,6 +460,8 @@ pi.events.on("permissions:decision", (raw) => {
 | `user_approved`               | User approved once via dialog                                        |
 | `user_approved_for_session`   | User approved for the rest of the session                            |
 | `user_denied`                 | User denied via dialog                                               |
+| `authorizer_allowed`          | A registered `authorizerChain` link granted the ask — no human asked |
+| `authorizer_denied`           | A registered `authorizerChain` link refused the ask — no human asked |
 | `auto_approved`               | Yolo mode — approved automatically without dialog                    |
 | `confirmation_unavailable`    | State was `ask` but no UI was available — blocked                    |
 | `gate_error`                  | The gate threw, or an escalation failed — blocked, fail-closed       |

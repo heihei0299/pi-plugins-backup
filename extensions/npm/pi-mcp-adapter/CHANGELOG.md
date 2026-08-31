@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.31.0] - 2026-08-28
+
+### Highlights
+- MCP Apps-aware servers can now recognize Pi as a UI-capable host and expose interactive resources.
+- UI capability advertising works consistently across legacy and modern MCP protocol negotiation.
+- Manual OAuth callback completion now supports HTTPS redirect URLs for pre-registered clients.
+
+### Added
+
+- Pi now advertises MCP Apps UI support with the `io.modelcontextprotocol/ui` extension capability, so compatible servers can expose UI resources. Thanks to [@VikashLoomba](https://github.com/VikashLoomba) for #465.
+
+### Fixed
+
+- Pre-registered OAuth clients can use HTTPS callback URLs through manual callback completion instead of being rejected as non-local redirects. Thanks to [@jluisrojas](https://github.com/jluisrojas) for PR #464.
+
 ## [2.30.0] - 2026-08-28
 
 ### Highlights

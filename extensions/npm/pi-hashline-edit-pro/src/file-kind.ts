@@ -1,6 +1,8 @@
 import { open as fsOpen, stat as fsStat } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_BYTES } from "./constants";
+import { assertLineLimit, lineLimitMoreThanMessage } from "./utils";
+import type { FileIdentity } from "./fs-write";
 
 const IMG_TYPES = new Set<string>([
   "image/bmp",
@@ -53,7 +55,7 @@ function looksLikeText(sample: Uint8Array): boolean {
 export type LFile =
   | { kind: "directory" }
   | { kind: "image"; mimeType: string }
-  | { kind: "text"; text: string; hadUtf8DecodeErrors?: true }
+  | { kind: "text"; text: string; identity?: FileIdentity; hadUtf8DecodeErrors?: true }
   | { kind: "binary"; description: string }
   | { kind: "too_large"; description: string };
 
@@ -86,6 +88,8 @@ export async function loadFileKindAndText(
 
   const fileHandle = await fsOpen(filePath, "r");
   try {
+    const openedStats = await fileHandle.stat();
+    const identity = { dev: openedStats.dev, ino: openedStats.ino };
     const buffer = Buffer.alloc(SNIFF_BYTES);
     const { bytesRead } = await fileHandle.read(
       buffer,
@@ -94,7 +98,7 @@ export async function loadFileKindAndText(
       0,
     );
     if (bytesRead === 0) {
-      return { kind: "text", text: "" };
+      return { kind: "text", text: "", identity };
     }
 
     const sample = buffer.subarray(0, bytesRead);
@@ -141,11 +145,7 @@ export async function loadFileKindAndText(
         for (let i = 0; i < decoded.length; i++) {
           if (decoded.charCodeAt(i) === 10) newlineCount++;
         }
-        if (newlineCount > options.maxLines) {
-          throw new Error(
-            `[E_FILE_TOO_LARGE] ${options.displayPath ?? filePath} has more than ${options.maxLines} lines, exceeding the ${options.maxLines}-line hashline limit. For very large files, use write.`,
-          );
-        }
+        if (newlineCount > options.maxLines) throw new Error(lineLimitMoreThanMessage(options.displayPath ?? filePath, options.maxLines));
       }
       return decoded;
     }
@@ -169,6 +169,11 @@ export async function loadFileKindAndText(
       position += chunkBytesRead;
     }
     parts.push(decodeChunk(new Uint8Array(0), false));
+    const text = parts.join("");
+    if (options?.maxLines !== undefined && text.length > 0) {
+      const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      assertLineLimit(normalized, options.displayPath ?? filePath, options.maxLines);
+    }
 
     if (containsNul) {
       return { kind: "binary", description: "contains NUL bytes" };
@@ -176,7 +181,8 @@ export async function loadFileKindAndText(
 
     return {
       kind: "text",
-      text: parts.join(""),
+      text,
+      identity,
       ...(hadUtf8DecodeErrors ? { hadUtf8DecodeErrors: true as const } : {}),
     };
   } finally {
