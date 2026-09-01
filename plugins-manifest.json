@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-31T02:31:56Z",
+  "updatedAt": "2026-09-01T02:46:28Z",
   "plugins": {
     "npm": {
       "@cortexkit/pi-magic-context": {
-        "version": "0.41.0",
-        "resolved": "https://registry.npmjs.org/@cortexkit%2fpi-magic-context/-/@cortexkit%2fpi-magic-context-0.41.0.tgz",
+        "version": "0.41.1",
+        "resolved": "https://registry.npmjs.org/@cortexkit%2fpi-magic-context/-/@cortexkit%2fpi-magic-context-0.41.1.tgz",
         "dir": "extensions/npm/@cortexkit/pi-magic-context"
       },
       "@ff-labs/pi-fff": {
@@ -14,8 +14,8 @@
         "dir": "extensions/npm/@ff-labs/pi-fff"
       },
       "@gotgenes/pi-permission-system": {
-        "version": "29.0.0",
-        "resolved": "https://registry.npmjs.org/@gotgenes%2fpi-permission-system/-/@gotgenes%2fpi-permission-system-29.0.0.tgz",
+        "version": "29.1.0",
+        "resolved": "https://registry.npmjs.org/@gotgenes%2fpi-permission-system/-/@gotgenes%2fpi-permission-system-29.1.0.tgz",
         "dir": "extensions/npm/@gotgenes/pi-permission-system"
       },
       "@juanibiapina/pi-extension-settings": {
@@ -49,8 +49,8 @@
         "dir": "extensions/npm/@narumitw/pi-caffeinate"
       },
       "@narumitw/pi-goal": {
-        "version": "0.54.3",
-        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-goal/-/@narumitw%2fpi-goal-0.54.3.tgz",
+        "version": "0.54.4",
+        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-goal/-/@narumitw%2fpi-goal-0.54.4.tgz",
         "dir": "extensions/npm/@narumitw/pi-goal"
       },
       "@narumitw/pi-lsp": {
@@ -64,8 +64,8 @@
         "dir": "extensions/npm/@narumitw/pi-plan-mode"
       },
       "@narumitw/pi-subagents": {
-        "version": "3.0.0",
-        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-subagents/-/@narumitw%2fpi-subagents-3.0.0.tgz",
+        "version": "3.0.1",
+        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-subagents/-/@narumitw%2fpi-subagents-3.0.1.tgz",
         "dir": "extensions/npm/@narumitw/pi-subagents"
       },
       "@tmustier/pi-raw-paste": {
@@ -89,8 +89,8 @@
         "dir": "extensions/npm/pi-agent-browser-native"
       },
       "pi-autoresearch": {
-        "version": "1.6.2",
-        "resolved": "https://registry.npmjs.org/pi-autoresearch/-/pi-autoresearch-1.6.2.tgz",
+        "version": "1.7.0",
+        "resolved": "https://registry.npmjs.org/pi-autoresearch/-/pi-autoresearch-1.7.0.tgz",
         "dir": "extensions/npm/pi-autoresearch"
       },
       "pi-cache-optimizer": {
@@ -124,8 +124,8 @@
         "dir": "extensions/npm/pi-web-access"
       },
       "pi-workspace-history": {
-        "version": "0.2.2",
-        "resolved": "https://registry.npmjs.org/pi-workspace-history/-/pi-workspace-history-0.2.2.tgz",
+        "version": "0.3.0",
+        "resolved": "https://registry.npmjs.org/pi-workspace-history/-/pi-workspace-history-0.3.0.tgz",
         "dir": "extensions/npm/pi-workspace-history"
       }
     },
