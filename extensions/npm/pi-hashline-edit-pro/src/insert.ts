@@ -8,7 +8,7 @@ import { MAX_HASH_LINES, parseHashRef, resolveAnchorLine, type Anchor } from "./
 import { stripAnchorRow } from "./hashline/resolve";
 import { loadP, loadGuide } from "./prompts";
 import { normReq } from "./payload-contract";
-import { isRec, rejectUnknownFields, splitLines } from "./utils";
+import { decodeStringArray, isRec, rejectUnknownFields, splitLines } from "./utils";
 import { clearBoundaryBypass } from "./boundary-bypass";
 import type { RPreview, RRState } from "./replace-render";
 import { queuedEdit, editToolBase, editRenderCallWrapper, editRenderResultWrapper } from "./edit-common";
@@ -31,7 +31,7 @@ export function assertInsertReq(request: unknown): asserts request is InsertReq 
     throw new Error('[E_BAD_SHAPE] Insert request requires a non-empty "path" string.');
   }
   if (typeof request.anchor !== "string" || request.anchor.length === 0) {
-    throw new Error('[E_BAD_SHAPE] Insert request requires an "anchor" string (3-char anchor from read output).');
+    throw new Error('[E_BAD_SHAPE] Insert request requires an "anchor" string (4-char anchor from read output).');
   }
   if (request.direction !== "before" && request.direction !== "after") {
     throw new Error('[E_BAD_SHAPE] Insert request "direction" must be "before" or "after".');
@@ -49,23 +49,23 @@ const insertToolSchema = Type.Object(
     }),
     anchor: Type.String({
       description:
-        'Bare 3-char anchor only (e.g. "aB3"): copy just the anchor from the leftmost column of a read row like `aB3│content`; never the line content. A pasted diff row like `+aB3│x` or an `anchor│` prefix is stripped automatically with a warning. The anchored line is preserved; the new lines go after or before it.',
+        'Bare 4-char anchor from a read row like `Hasu│content`, never the content. A pasted `+Hasu│x` diff row or `anchor│` prefix is stripped with a warning. The anchor line is preserved; lines go after or before it.',
     }),
     direction: Type.Union(
       [
-        Type.Literal("after", { description: "Insert the lines after the anchor line" }),
-        Type.Literal("before", { description: "Insert the lines before the anchor line" }),
+        Type.Literal("after"),
+        Type.Literal("before"),
       ],
       { description: '"after" or "before"' },
     ),
     lines: Type.Array(
       Type.String({
         description:
-          "One line to insert. Each element is exactly one line; do not embed \\n inside an element: use separate elements.",
+          "One line to insert; never embed \\n inside an element.",
       }),
       {
         description:
-          'Lines to insert as an array of strings, one element per line. Use [""] for a blank line. The anchor line is preserved; never include it in lines.',
+          'One string per line; [""] is a blank line; never include the anchor line.',
       }
     ),
   },
@@ -101,15 +101,20 @@ function buildInsertEdit(
   return { editParams, anchorLine };
 }
 
-export async function insertPreview(request: unknown, cwd: string): Promise<RPreview> {
+export async function insertPreview(request: unknown, cwd: string, signal?: AbortSignal): Promise<RPreview> {
   try {
     const normalized = normReq(request);
+    if (isRec(normalized)) {
+      const expanded = decodeStringArray(normalized.lines);
+      if (expanded) normalized.lines = expanded;
+    }
     assertInsertReq(normalized);
     const { ref } = parseInsertAnchor(normalized.anchor);
     const preload = await readNormFile(normalized.path, cwd, {
       accessMode: constants.R_OK,
       maxLines: MAX_HASH_LINES,
       noPersist: true,
+      signal,
     });
     const { editParams } = buildInsertEdit(normalized, preload, ref);
     const pipe = await execPipeline(editParams, cwd, {
@@ -117,9 +122,11 @@ export async function insertPreview(request: unknown, cwd: string): Promise<RPre
       noPersist: true,
       preloadedNorm: preload,
       skipBoundaryDedup: true,
+      signal,
     });
     return previewFromPipe(pipe);
   } catch (error: unknown) {
+    if (signal?.aborted) throw error;
     return previewError(error);
   }
 }
@@ -163,6 +170,14 @@ export function buildInsertToolDef(): InsertToolDef {
     renderResult: editRenderResultWrapper,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const canonical = normReq(params);
+      const insertWarnings: string[] = [];
+      if (isRec(canonical)) {
+        const expanded = decodeStringArray(canonical.lines);
+        if (expanded) {
+          insertWarnings.push('[E_BAD_SHAPE] Unwrapped JSON array syntax from a lines element.');
+          canonical.lines = expanded;
+        }
+      }
       assertInsertReq(canonical);
       const req = canonical;
       const path = req.path;
@@ -188,7 +203,7 @@ export function buildInsertToolDef(): InsertToolDef {
           verb: "inserted",
           noopNoun: "Insertion",
           foldedAnchorLines: anchorLine === undefined ? 0 : 1,
-          prefixWarnings: anchorWarnings,
+          prefixWarnings: [...anchorWarnings, ...insertWarnings],
           onApplied: () => clearBoundaryBypass(mutationTargetPath),
         });
       });

@@ -5,6 +5,111 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [31.0.1](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v31.0.0...pi-permission-system-v31.0.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **pi-permission-system:** consult both path directions for a redirect the parser could not resolve ([0327feb](https://github.com/gotgenes/pi-packages/commit/0327feb9d2cefc47fcebe724ee94cf9949a8749a)), closes [#814](https://github.com/gotgenes/pi-packages/issues/814)
+
+### Documentation
+
+* **pi-permission-system:** commit the instrument behind the unresolved-redirect measurement ([757affe](https://github.com/gotgenes/pi-packages/commit/757affeac19400bf7764c9f06fa58bf18ccafc1e)), closes [#814](https://github.com/gotgenes/pi-packages/issues/814)
+* **pi-permission-system:** mark Phase 14 Step 12 complete ([07d23ef](https://github.com/gotgenes/pi-packages/commit/07d23ef6cffb954058ff2f8fe43917a937de437f)), closes [#814](https://github.com/gotgenes/pi-packages/issues/814)
+* **pi-permission-system:** register the unresolved-redirect measurement script ([8203898](https://github.com/gotgenes/pi-packages/commit/8203898bd2dadb62ae72e5bedb579bbaf062cf03)), closes [#814](https://github.com/gotgenes/pi-packages/issues/814)
+* **pi-permission-system:** state the unresolved-redirect residual as a parse fact ([e74c2fc](https://github.com/gotgenes/pi-packages/commit/e74c2fc3c63bf4a18b63334e1fb9b24565fb36b2)), closes [#814](https://github.com/gotgenes/pi-packages/issues/814)
+* **pi-permission-system:** describe the unresolvable-redirect rule as users meet it ([9e57a90](https://github.com/gotgenes/pi-packages/commit/9e57a909e7719fbfa670ad3ec153e5aa2faf1510)), closes [#814](https://github.com/gotgenes/pi-packages/issues/814)
+
+## [31.0.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v30.2.0...pi-permission-system-v31.0.0) (2026-09-02)
+
+
+### Bug Fixes
+
+* **pi-permission-system:** **breaking:** gate a path named as a for or select loop operand ([6189d81](https://github.com/gotgenes/pi-packages/commit/6189d81dc48a26d572bacb91a1b2e7c062634ad9)), closes [#839](https://github.com/gotgenes/pi-packages/issues/839)
+* **pi-permission-system:** **breaking:** gate a path named as a case subject ([dfd2f8d](https://github.com/gotgenes/pi-packages/commit/dfd2f8d682c39dcfe6a903cdeadde18b08a7cc60)), closes [#839](https://github.com/gotgenes/pi-packages/issues/839)
+
+### Documentation
+
+* **pi-permission-system:** commit the instrument behind the statement-operand measurement ([6a708b7](https://github.com/gotgenes/pi-packages/commit/6a708b716f038bf192875a0166ae6a6ab012c3d8)), closes [#839](https://github.com/gotgenes/pi-packages/issues/839)
+* **pi-permission-system:** register the statement-operand measurement script ([e3e8799](https://github.com/gotgenes/pi-packages/commit/e3e879935c6f395d4b2387a6e30e0791bb8fb765)), closes [#839](https://github.com/gotgenes/pi-packages/issues/839)
+* **pi-permission-system:** correct the drift note in the operand measurement ([e300934](https://github.com/gotgenes/pi-packages/commit/e300934c0aad34b3bfd127695219250ca6f4613f)), closes [#839](https://github.com/gotgenes/pi-packages/issues/839)
+
+## [30.2.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v30.1.0...pi-permission-system-v30.2.0) (2026-09-02)
+
+
+### Features
+
+* **pi-permission-system:** offer a both-directions session grant at the ask prompt ([c4c6736](https://github.com/gotgenes/pi-packages/commit/c4c67364b88e74ad439adcc6c442de46a4f90c04)), closes [#813](https://github.com/gotgenes/pi-packages/issues/813)
+
+### Bug Fixes
+
+* **pi-permission-system:** name every path in a forwarded whole-session scope label ([b61c19d](https://github.com/gotgenes/pi-packages/commit/b61c19d77c74e2d8ff233ca556af04f6aacd2c09)), closes [#813](https://github.com/gotgenes/pi-packages/issues/813)
+
+### Documentation
+
+* **pi-permission-system:** document the session-grant direction width ([dae4737](https://github.com/gotgenes/pi-packages/commit/dae473727b4b514761545d8fcc0a5e4824fe35b0)), closes [#813](https://github.com/gotgenes/pi-packages/issues/813)
+
+## [30.1.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v30.0.0...pi-permission-system-v30.1.0) (2026-09-02)
+
+
+### Features
+
+* **pi-permission-system:** publish isToolFullyDenied for cross-extension tool pre-filtering ([#815](https://github.com/gotgenes/pi-packages/issues/815)) ([4345b19](https://github.com/gotgenes/pi-packages/commit/4345b199e5a33427e47bb80f9c16cb78fb1e7fbf)), closes [#815](https://github.com/gotgenes/pi-packages/issues/815)
+
+### Bug Fixes
+
+* **pi-permission-system:** stop hiding a tool whose surface has a reachable non-deny rule ([#815](https://github.com/gotgenes/pi-packages/issues/815)) ([ce46b6c](https://github.com/gotgenes/pi-packages/commit/ce46b6c7b9f4c901d6a035f3be6e334f77a76e95)), closes [#815](https://github.com/gotgenes/pi-packages/issues/815)
+
+### Documentation
+
+* **pi-permission-system:** describe tool exposure as surface reachability ([#815](https://github.com/gotgenes/pi-packages/issues/815)) ([71d9696](https://github.com/gotgenes/pi-packages/commit/71d96969e5c33ecc0f38b0a43b0bdaf267622000))
+* **pi-permission-system:** stop recommending getToolPermission for tool pre-filtering ([#815](https://github.com/gotgenes/pi-packages/issues/815)) ([fdf0a38](https://github.com/gotgenes/pi-packages/commit/fdf0a383d5419eaded4b6277ead8264e23aa281d))
+
+## [30.0.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v29.3.0...pi-permission-system-v30.0.0) (2026-09-02)
+
+
+### Features
+
+* **pi-permission-system:** **breaking:** record a session approval's surface per pattern ([499444d](https://github.com/gotgenes/pi-packages/commit/499444df5a21e289409cbf3b360033a13d0eba56)), closes [#810](https://github.com/gotgenes/pi-packages/issues/810)
+* **pi-permission-system:** grant each external path only the direction its command proved ([aa38c74](https://github.com/gotgenes/pi-packages/commit/aa38c746bf9b82ed0dc96217cf4789aae9f090cd)), closes [#810](https://github.com/gotgenes/pi-packages/issues/810)
+
+### Documentation
+
+* **pi-permission-system:** document per-pattern approval surfaces and mark Phase 14 Step 10 ([5511450](https://github.com/gotgenes/pi-packages/commit/551145024364cc794b3c48256362d69971aa69de)), closes [#810](https://github.com/gotgenes/pi-packages/issues/810)
+
+## [29.3.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v29.2.0...pi-permission-system-v29.3.0) (2026-09-02)
+
+
+### Features
+
+* **pi-permission-system:** name and document the well-known permission surfaces ([#808](https://github.com/gotgenes/pi-packages/issues/808)) ([95ef9ab](https://github.com/gotgenes/pi-packages/commit/95ef9ab9c00ee09d4dda820d43abc7fe7e5ff1b2)), closes [#808](https://github.com/gotgenes/pi-packages/issues/808)
+
+### Documentation
+
+* **pi-permission-system:** document the named permission surfaces ([#808](https://github.com/gotgenes/pi-packages/issues/808)) ([03c6a52](https://github.com/gotgenes/pi-packages/commit/03c6a5228aa050ac940d851e6c219e62062acbd6))
+
+### Miscellaneous Chores
+
+* upgrade lint tooling and pin rumdl below the MD013 reflow regression ([0ee1ad8](https://github.com/gotgenes/pi-packages/commit/0ee1ad886815e6e50d99f66050fbbcf5a9f0319a)), closes [#866](https://github.com/gotgenes/pi-packages/issues/866)
+* upgrade fallow to 3.22.0 ([1b2a562](https://github.com/gotgenes/pi-packages/commit/1b2a5620bf5d7f1014676b47e58df8b43ff00496)), closes [#866](https://github.com/gotgenes/pi-packages/issues/866)
+
+## [29.2.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v29.1.0...pi-permission-system-v29.2.0) (2026-09-01)
+
+
+### Features
+
+* **pi-permission-system:** expose the registered extractor and formatter for a tool ([9d9952d](https://github.com/gotgenes/pi-packages/commit/9d9952d1ee235086e9809d6cb50e1b31ae2fc3f6))
+* **pi-permission-system:** resolve a child's missing extractor from its parent node ([91b3ef1](https://github.com/gotgenes/pi-packages/commit/91b3ef1918a827f0ee3f8c0acf13cee5ba5f72ef)), closes [#793](https://github.com/gotgenes/pi-packages/issues/793)
+
+### Documentation
+
+* **pi-permission-system:** record the fact-shaping inheritance rule (ADR 0012) ([dbdd9f1](https://github.com/gotgenes/pi-packages/commit/dbdd9f19f29a1a67d282fdc050a71b462021eb56))
+
+<!-- Entries below this point were generated by release-please, which this
+     repository used until 2026-09. Some record releases made in the
+     packages' predecessor repositories, before the monorepo existed. See
+     docs/decisions/0002-git-cliff-release-automation.md. -->
+
 ## [29.1.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v29.0.0...pi-permission-system-v29.1.0) (2026-08-31)
 
 

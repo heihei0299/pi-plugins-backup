@@ -20,6 +20,7 @@ import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session
 import { combineAbortSignals, isAbortError } from "./runtime-owner.ts";
 import { ensureToolCallApproved } from "./tool-approval.ts";
 import { Check, Errors } from "typebox/value";
+import { getInputRequiredNeedsUiDetails } from "./errors.ts";
 
 type ClientCallToolResult = Awaited<ReturnType<Client["callTool"]>>;
 type ClientReadResourceResult = Awaited<ReturnType<Client["readResource"]>>;
@@ -486,7 +487,13 @@ export function createDirectToolExecutor(
             onNeedsAuth: recoverAuthConnection,
           },
           spec.serverName,
-          (conn) => conn.client.readResource({ uri: spec.resourceUri! }, requestOptions),
+          async (conn) => {
+            const refreshRead = await state.manager.prepareResourceUse?.(spec.serverName, spec.resourceUri!, conn);
+            return conn.client.readResource(
+              { uri: spec.resourceUri! },
+              refreshRead ? { ...requestOptions, cacheMode: "refresh" } : requestOptions,
+            );
+          },
         );
         const content = transformMcpResourceContents(result.contents ?? [], state.owner?.signal);
         const guarded = await guardMcpOutput(content.length > 0 ? content : [{ type: "text" as const, text: "(empty resource)" }], {
@@ -520,11 +527,14 @@ export function createDirectToolExecutor(
           onNeedsAuth: recoverAuthConnection,
         },
         spec.serverName,
-        (conn) => abortable(conn.client.callTool({
-          name: spec.originalName,
-          arguments: normalizedParams,
-          _meta: uiSession?.requestMeta,
-        }, requestOptions), ownedSignal),
+        async (conn) => {
+          await state.manager.ensureListen?.(spec.serverName, conn);
+          return abortable(conn.client.callTool({
+            name: spec.originalName,
+            arguments: normalizedParams,
+            _meta: uiSession?.requestMeta,
+          }, requestOptions), ownedSignal);
+        },
       );
       uiSession?.sendToolResult(result as unknown as import("@modelcontextprotocol/client").CallToolResult);
 
@@ -594,6 +604,16 @@ export function createDirectToolExecutor(
         return {
           content: [{ type: "text" as const, text: message }],
           details: { error: "url_elicitation_required", server: spec.serverName, action },
+        };
+      }
+      const inputRequired = getInputRequiredNeedsUiDetails(error, spec.resourceUri
+        ? { server: spec.serverName, resourceUri: spec.resourceUri }
+        : { server: spec.serverName, tool: spec.originalName });
+      if (inputRequired) {
+        uiSession?.sendToolCancelled(inputRequired.message);
+        return {
+          content: [{ type: "text" as const, text: inputRequired.message }],
+          details: { ...inputRequired },
         };
       }
       const message = error instanceof Error ? error.message : String(error);

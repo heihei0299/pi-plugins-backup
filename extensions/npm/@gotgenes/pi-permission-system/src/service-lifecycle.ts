@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AdjudicationRole } from "./authority/authorizer-selection";
+import type { NodeIdentity } from "./authority/inherited-registrations";
 import { emitReadyEvent, type PermissionEventBus } from "./permission-events";
 import {
   type PermissionsService,
@@ -45,7 +46,7 @@ export interface ReadyAnnouncer {
  *   superseded `/reload` generation cannot evict the fresh one.
  */
 export class PermissionServiceLifecycle
-  implements ServiceLifecycle, ReadyAnnouncer
+  implements ServiceLifecycle, ReadyAnnouncer, NodeIdentity
 {
   /** The key this instance last published under; `null` until it publishes. */
   private publishedSessionId: string | null = null;
@@ -59,6 +60,17 @@ export class PermissionServiceLifecycle
     private readonly events: PermissionEventBus,
     private readonly subscriptions: readonly (() => void)[],
   ) {}
+
+  /**
+   * This node's own session id, or `null` before it has published.
+   *
+   * Satisfies `NodeIdentity`: the fact-shaping lookups need to know which node
+   * they run in to find their ancestors, and this class already reads it from
+   * the context at `activate` and holds it — so identity keeps one home.
+   */
+  currentSessionId(): string | null {
+    return this.publishedSessionId;
+  }
 
   activate(ctx: ExtensionContext): void {
     // Re-arm: a new session generation gets its own post-session_start

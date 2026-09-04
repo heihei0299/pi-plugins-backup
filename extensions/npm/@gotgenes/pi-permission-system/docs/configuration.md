@@ -122,9 +122,14 @@ In an interactive **TUI** session, an `ask` decision opens an inline keybind dia
 | Key | Action                                                            |
 | --- | ----------------------------------------------------------------- |
 | `y` | Approve once                                                      |
-| `s` | Approve for this session                                          |
+| `s` | Approve for this session, in the direction the gate proved        |
+| `b` | Approve for this session in **both** directions (see below)       |
 | `n` | Deny                                                              |
 | `r` | Deny with a reason (opens an inline editor; a reason is required) |
+
+`b` appears only for an ask whose paths all prove the same direction — a read or a write, but not both.
+Every other ask shows the four options above without it.
+See [session-approvals.md](session-approvals.md#grant-direction) for what the two widths grant.
 
 Arrow keys / `j`/`k` move the highlight, `enter` confirms the highlighted option, and `esc` denies.
 With `doublePressToConfirm` enabled (the default), a letter hotkey **arms** its action and shows a `Press y again to approve.` hint; press the same key again to commit.
@@ -294,6 +299,10 @@ A string value is a catch-all for that surface.
 
 Unknown or absent tools are not required in the config.
 If a tool is not registered at runtime, this extension blocks it before permission checks run.
+
+A tool is withheld from the model entirely only when **every** pattern configured under its surface resolves to `deny`.
+So `"bash": "deny"` hides the tool, while `"bash": { "*": "deny", "git *": "ask" }` keeps it visible — the agent can attempt a `git` command and be prompted, and everything else is denied at the gate.
+Ordering follows the same last-match-wins rule as every other lookup: an exception written *after* the `deny` catch-all is reachable, while one written *before* it is shadowed and the tool is hidden.
 
 #### Path Patterns for File Tools
 
@@ -757,6 +766,11 @@ A tool's identity establishes its direction, and on the bash surface a redirect 
 An access whose direction cannot be established consults **both** surfaces and takes the more restrictive answer.
 That is deliberate: an unproven access is never treated as the narrower one.
 
+A redirect the parser could not make sense of is unproven for the same reason.
+The read-write open `<>` is the clearest case: `tree-sitter-bash` has no node for it, so neither half of the operator can be trusted to describe the whole, and its destination consults both surfaces rather than the one the surviving half would name.
+The rule is about the parse rather than about `<>`, so it also covers a redirect that is itself well-formed but sits beside something the parser could not read: in `cat $(( > out.txt`, the `> out.txt` consults both surfaces too.
+That is deliberate — a command nobody could parse is the last place to assume a file is only being read — and it does not reach past the neighbour, so a redirect in a later statement keeps its proof.
+
 Attribution is per **token**, not per command, so one invocation can do both: in `cat notes.md > /backup/notes.md`, `notes.md` is a read and `/backup/notes.md` is a write.
 A redirect operator's proof is absolute — it overrides whatever the command in front of it proved, because `> out.txt` writes `out.txt` however read-only that command is.
 When the same path is reached twice with disagreeing directions (`cat a.txt > a.txt`), the two fold to unproven, which consults both surfaces.
@@ -993,6 +1007,9 @@ Avoid arrays, multi-line scalars, and YAML anchors.
 }
 ```
 
+The Bash tool stays visible to the agent here: the three `git` patterns are written after the `deny` catch-all, so they are reachable.
+Every other command is denied at the gate.
+
 ### Read-Only Bash Command Allowlist
 
 The [Read-Only Mode](#read-only-mode) recipe above gates *tools*; this one gates the *bash* surface.
@@ -1142,11 +1159,14 @@ Additional behaviors:
 
 - Unknown/unregistered tools are blocked before permission checks (prevents bypass attempts)
 - Tool filtering is restrict-only: the active set starts from pi's already-active tools (`pi.getActiveTools()`) and only ever has denied tools removed — the permission system never activates a tool pi left off by default (e.g. `find`, `grep`, `ls`)
+- A tool is removed only when every value under its surface resolves to `deny`; a surface with any reachable `allow` or `ask` pattern stays available (see [Tool Surfaces](#tool-surfaces))
 - The `Available tools:` system prompt section is narrowed to match the filtered active tool set: denied tools' lines are dropped, the rest are kept, and the section is removed entirely only when no tool is allowed
 - The narrowed prompt is recomputed and returned on every turn but is byte-stable for a stable policy/agent, so the provider's prompt cache (tools + system prefix) is preserved rather than rewritten each turn
 - Extension-provided tools like `task`, `mcp`, and third-party tools are handled by exact registered name
 - Generic extension-tool approval prompts include a bounded input preview; built-in file tools use concise human-readable summaries
 - Permission review logs include `toolInputPreview` values for non-bash/non-MCP tool calls, with sensitive-keyed values masked and every value bounded by `reviewLogFieldMaxWidth` (see [Log file sensitivity](#log-file-sensitivity))
+- A tool whose path came from an extractor registered in an **ancestor** session rather than this one records `extractorSource: "inherited"` beside the decision; the field is absent for every path this session resolved itself.
+  This happens in a subagent child when the extractor's provider was kept out of the child but the tool's own package was not — the child borrows the declaration so its `path` and `external_directory` gates still see the path (see [Subagent Integration](https://github.com/gotgenes/pi-packages/blob/main/packages/pi-permission-system/docs/subagent-integration.md#loading-asymmetry))
 
 ---
 
@@ -1201,5 +1221,7 @@ npx --yes ajv-cli@5 validate \
 ```json
 "$schema": "https://raw.githubusercontent.com/gotgenes/pi-packages/main/packages/pi-permission-system/schemas/permissions.schema.json"
 ```
+
+The well-known surface keys — `*`, `path`, `external_directory`, `bash`, `mcp`, `skill`, and the four directional keys — are named properties in the schema, so an editor completes them and shows each key's own documentation on hover; any other registered tool name still validates as a surface.
 
 The schema is generated from the extension's zod source of truth (`src/config-schema.ts`); regenerate it with `pnpm run gen:schema` after changing the config shape.

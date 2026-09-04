@@ -159,12 +159,12 @@ function assertItem(edit: Record<string, unknown>): void {
 
   if ("remove_from" in edit && typeof edit.remove_from !== "string") {
     throw new Error(
-      `[E_BAD_SHAPE] Field "remove_from" must be an anchor string (3-char anchor).`,
+      `[E_BAD_SHAPE] Field "remove_from" must be an anchor string (4-char anchor).`,
     );
   }
   if ("remove_to" in edit && typeof edit.remove_to !== "string") {
     throw new Error(
-      `[E_BAD_SHAPE] Field "remove_to" must be an anchor string (3-char anchor).`,
+      `[E_BAD_SHAPE] Field "remove_to" must be an anchor string (4-char anchor).`,
     );
   }
   if (!("replacement_lines" in edit)) {
@@ -175,7 +175,7 @@ function assertItem(edit: Record<string, unknown>): void {
   }
   if (typeof edit.remove_from !== "string" || typeof edit.remove_to !== "string") {
     throw new Error(
-      `[E_BAD_SHAPE] The edit requires "remove_from" and "remove_to" anchor strings (3-char anchors from read output).`,
+      `[E_BAD_SHAPE] The edit requires "remove_from" and "remove_to" anchor strings (4-char anchors from read output).`,
     );
   }
 }
@@ -195,7 +195,7 @@ export function stripAnchorRow(
 			: match[1] === "-"
 				? 'leading "-" marker'
 				: '"anchor│" prefix';
-	warnings?.push(`[E_BAD_REF] Stripped ${marker} from ${entryLabel} "${trimmed}".`);
+	warnings?.push(`[E_BAD_REF] Stripped ${marker} from ${entryLabel} "${clipLine(trimmed, 48)}".`);
 	return match[2]!;
 }
 
@@ -240,13 +240,8 @@ export function stripBarePrefixes(
 	const locations = stripped
 		.map((s) => `replacement_lines line ${s.lineIndex + 1}`)
 		.join(", ");
-	const matchedCount = stripped.filter((s) => s.matched).length;
-	const guidance =
-		matchedCount === 0
-			? " Verify it was pasted from read output."
-			: "";
 	warnings.push(
-		`[E_BARE_HASH_PREFIX] Stripped "anchor│" prefix from ${locations}.${guidance}`
+		`[E_BARE_HASH_PREFIX] Stripped "anchor│" prefix from ${locations}.`
 	);
 	return { ...edit, content_lines: contentLines };
 }
@@ -290,7 +285,7 @@ export function swapReversedRanges(
 		return edit;
 	}
 	warnings.push(
-		`[E_BAD_OP] Autocorrected: remove_from/remove_to were reversed; swapped them.`
+		`[E_BAD_OP] Swapped reversed remove_from/remove_to.`
 	);
 	return { ...edit, hash_bounds: [endRef, startRef] as [Anchor, Anchor] };
 }

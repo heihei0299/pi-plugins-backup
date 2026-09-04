@@ -209,7 +209,7 @@ export class GateRunner {
     };
     const gateResult = await applyPermissionGate({
       state: check.state,
-      sessionApproval: descriptor.sessionApproval?.toGateApproval(),
+      canGrantForSession: descriptor.sessionApproval?.isRecordable ?? false,
       promptForApproval: async () => {
         const decision = await this.prompter.escalate({
           requestId,
@@ -228,9 +228,9 @@ export class GateRunner {
       messages,
     });
 
-    // 4. Determine whether session approval was granted
-    const hasSessionApproval =
-      gateResult.action === "allow" && gateResult.sessionApproval !== undefined;
+    // 4. Determine whether session approval was granted, and at what width
+    const sessionGrant =
+      gateResult.action === "allow" ? gateResult.sessionGrant : undefined;
 
     // 5. Emit decision event
     this.emitDecision(
@@ -242,15 +242,17 @@ export class GateRunner {
         gateResult.action === "allow" ? "allow" : "deny",
         resolutionFor(gateResult.decidedBy, {
           approved: gateResult.action === "allow",
-          forSession: hasSessionApproval,
+          forSession: sessionGrant !== undefined,
         }),
       ),
     );
 
     // 6. Record session approval — tell the store; it owns the per-pattern loop
-    // hasSessionApproval already implies gateResult.action === "allow"
-    if (hasSessionApproval && descriptor.sessionApproval) {
-      this.recorder.recordSessionApproval(descriptor.sessionApproval);
+    // A present grant already implies gateResult.action === "allow".
+    if (sessionGrant && descriptor.sessionApproval) {
+      this.recorder.recordSessionApproval(
+        descriptor.sessionApproval.atWidth(sessionGrant.width),
+      );
     }
 
     if (gateResult.action === "block") {

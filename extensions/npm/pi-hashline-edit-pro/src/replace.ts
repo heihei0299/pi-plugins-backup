@@ -9,7 +9,7 @@ import {
 } from "./replace-diff";
 import { readNormFile, type NormFile } from "./file-reader";
 import { editToolSchema, type ReqParams, assertReq, normReq } from "./payload-contract";
-import { isRec } from "./utils";
+import { decodeStringArray, isRec } from "./utils";
 import { loadP, loadGuide } from "./prompts";
 import { type FileIdentity } from "./fs-write";
 import { applyEdit,
@@ -63,6 +63,7 @@ export interface PipelineResult {
   totalRemovedLines: number;
   hadBoundaryDedup: boolean;
   boundaryRemovedLines: number;
+  boundaryRemovedLineTexts: string[];
   identity: FileIdentity;
 }
 
@@ -91,7 +92,7 @@ async function resolveMissingPath(
   if (matches.length === 1) {
     return {
       path: matches[0]!,
-      warning: `[E_BAD_SHAPE] Autocorrected: missing "path" resolved to ${matches[0]}.`,
+      warning: `[E_BAD_SHAPE] Missing "path" resolved to ${matches[0]}.`,
     };
   }
   if (matches.length > 1) {
@@ -159,11 +160,17 @@ export async function execPipeline(
   const path = params.path;
 
   const editWarnings: string[] = [];
+  let replacementLines = params.replacement_lines;
+  const expandedReplacement = decodeStringArray(replacementLines);
+  if (expandedReplacement) {
+    editWarnings.push('[E_BAD_SHAPE] Unwrapped JSON array syntax from a replacement_lines element.');
+    replacementLines = expandedReplacement;
+  }
   const edit = resEdit(
     {
       remove_from: params.remove_from,
       remove_to: params.remove_to,
-      replacement_lines: params.replacement_lines,
+      replacement_lines: replacementLines,
     },
     editWarnings,
   );
@@ -226,6 +233,7 @@ export async function execPipeline(
     totalRemovedLines,
     hadBoundaryDedup: (anchorResult.autoFixes?.length ?? 0) > 0,
     boundaryRemovedLines: anchorResult.autoFixes?.length ?? 0,
+    boundaryRemovedLineTexts: anchorResult.autoFixes?.map((fix) => fix.removedLine) ?? [],
     identity,
   };
 }
@@ -244,6 +252,7 @@ export function previewError(error: unknown): RPreview {
 export async function compPreview(
   request: unknown,
   cwd: string,
+  signal?: AbortSignal,
 ): Promise<RPreview> {
   try {
     const normalized = normReq(request);
@@ -251,10 +260,11 @@ export async function compPreview(
     const pipe = await execPipeline(
       normalized,
       cwd,
-      { accessMode: constants.R_OK, noPersist: true },
+      { accessMode: constants.R_OK, noPersist: true, signal },
     );
     return previewFromPipe(pipe);
   } catch (error: unknown) {
+    if (signal?.aborted) throw error;
     return previewError(error);
   }
 }

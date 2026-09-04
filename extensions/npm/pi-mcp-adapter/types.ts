@@ -26,6 +26,14 @@ export type McpServerRuntimeStatus =
   | "not-connected"
   | "disabled";
 
+export type McpListenState =
+  | "active"
+  | "dropped"
+  | "re-establishing"
+  | "legacy"
+  | "not-listening"
+  | "disconnected";
+
 export interface McpServerStatusSnapshot {
   readonly name: string;
   readonly status: McpServerRuntimeStatus;
@@ -33,6 +41,8 @@ export interface McpServerStatusSnapshot {
   readonly resourceCount?: number;
   readonly failedAgoSeconds?: number;
   readonly disabled: boolean;
+  readonly listenState: McpListenState;
+  readonly catalogStale?: boolean;
 }
 
 export interface McpStatusSnapshot {
@@ -173,6 +183,9 @@ export type UiDisplayMode = "inline" | "fullscreen" | "pip";
 export interface UiServerHandle {
   url: string;
   port: number;
+  /** URL of the second-origin MCP Apps sandbox proxy. */
+  proxyUrl: string;
+  proxyPort: number;
   sessionToken: string;
   serverName: string;
   toolName: string;
@@ -183,6 +196,7 @@ export interface UiServerHandle {
   sendToolResult: (result: CallToolResult) => void;
   sendResultPatch: (result: CallToolResult) => void;
   sendToolCancelled: (reason: string) => void;
+  sendResourceUpdated: (uri: string) => void;
   sendHostContext: (context: UiHostContext) => void;
   /** Get accumulated messages from this session */
   getSessionMessages: () => UiSessionMessages;
@@ -564,9 +578,8 @@ export interface McpSettings {
   approveTools?: boolean | string[];
   disableProxyTool?: boolean;
   /** Freeze direct-tool registration after the initial sync. Automatic metadata updates
-   * (reconnects, lazy-connect, tool-list-changed) won't rebuild the system prompt,
-   * preserving the prompt-cache prefix. The agent rediscovers explicitly via
-   * mcp({ connect: "server" }). Default: false. */
+   * and explicit reconnects won't rebuild the system prompt, preserving the
+   * prompt-cache prefix. Proxy/search/cache metadata still refreshes. Default: false. */
   freezeDirectTools?: boolean;
   autoAuth?: boolean;
   sampling?: boolean;
@@ -710,6 +723,8 @@ export interface McpPanelCallbacks {
 
 export interface McpPanelResult {
   changes: Map<string, true | string[] | false>;
+  /** Servers whose disabled flag changed during the panel session (name → new disabled state). */
+  disabledChanges: Map<string, boolean>;
   cancelled: boolean;
 }
 

@@ -1,5 +1,4 @@
-- `replace`: `remove_from` and `remove_to` are bare anchors like `aB3` (the 3 chars before `│` in `aB3│content`), never the full row or file content. Use the same anchor for both to change one line.
-- `replace`: `replacement_lines` is bare content without `│`, one element per line. Use `[]` to delete, `[""]` for one blank line, never put `\n` inside an element and never include the `anchor│` prefix.
-- `replace`: the range from `remove_from` to `remove_to` is exactly deleted and replaced in order — make it tight, only the lines that actually change, and copy leading spaces exactly.
-- `replace`: diff markers like `+aB3│` or `-aB3│` are stripped automatically if pasted, but always try to send bare content.
-- `replace`: `+anchor│` and ` anchor│` rows in a post-edit diff are fresh anchors — you can use them for the next edit without a new `read`. Do one `replace`/`insert` per turn and check the diff before the next edit.
+- `replace`: use the same anchor for `remove_from` and `remove_to` to change one line.
+- `replace`: `replacement_lines` takes bare lines without `│`; `[""]` is one blank line; pasted `anchor│` prefixes are stripped automatically.
+- `replace`: keep the range tight — only lines that actually change — and copy leading spaces exactly.
+- `replace`: post-edit diff `+anchor│`/` anchor│` rows are fresh anchors for the next edit — no new `read` needed. One edit per turn; check the diff before the next edit on that file.

@@ -274,10 +274,16 @@ function makeHitFromIndices(
   };
 }
 
+let cachedRgPath: string | undefined;
+export function clearRgPathCache(): void {
+  cachedRgPath = undefined;
+}
+
 async function resolveRgPath(): Promise<string> {
+  if (cachedRgPath !== undefined) return cachedRgPath;
   try {
     const r = spawnSync("rg", ["--version"], { stdio: "pipe" });
-    if (!r.error && r.status === 0) return "rg";
+    if (!r.error && r.status === 0) { cachedRgPath = "rg"; return "rg"; }
   } catch {}
   try {
     const { homedir } = await import("os");
@@ -287,7 +293,7 @@ async function resolveRgPath(): Promise<string> {
     const bin = join(base, "bin", process.platform === "win32" ? "rg.exe" : "rg");
     if (existsSync(bin)) {
       const r = spawnSync(bin, ["--version"], { stdio: "pipe" });
-      if (!r.error && r.status === 0) return bin;
+      if (!r.error && r.status === 0) { cachedRgPath = bin; return bin; }
     }
   } catch {}
   try {
@@ -300,7 +306,7 @@ async function resolveRgPath(): Promise<string> {
     const mod = await import("file://" + toolsManagerPath);
     if (mod.ensureTool) {
       const p = await mod.ensureTool("rg", true);
-      if (p) return p;
+      if (p) { cachedRgPath = p; return p; }
     }
   } catch {}
   throw new Error("[E_ACCESS] ripgrep (rg) is required for grep but was not found. Install ripgrep or ensure pi can download it to ~/.pi/agent/bin.");
@@ -366,6 +372,7 @@ async function collectRgMatches(
     });
     child.on("error", (error) => {
       cleanup();
+      if (rgPath === cachedRgPath) cachedRgPath = undefined;
       reject(error);
     });
     child.on("close", (code) => {
@@ -412,29 +419,29 @@ const grepToolSchema = Type.Object(
     ),
     glob: Type.Optional(
       Type.String({
-        description: "Filter files by glob pattern; * matches across directories, e.g. '*.ts' or '**/*.spec.ts'. A leading / is ignored; the pattern may be relative to the search root or to the current directory.",
+        description: "Filter files by glob; `*` crosses directories, e.g. `*.ts`. A leading `/` is ignored; relative to the search root or cwd.",
       }),
     ),
     ignoreCase: Type.Optional(
       Type.Boolean({
-        description: "Case-insensitive search (default: false)",
+        description: "Case-insensitive search",
       }),
     ),
     literal: Type.Optional(
       Type.Boolean({
-        description: "Treat pattern as literal string instead of regex (default: false)",
+        description: "Treat pattern as literal text instead of regex",
       }),
     ),
     context: Type.Optional(
       Type.Integer({
         minimum: 0,
-        description: "Number of lines to show before and after each match (default: 0)",
+        description: "Lines of context before and after each match",
       }),
     ),
     limit: Type.Optional(
       Type.Integer({
         minimum: 1,
-        description: "Maximum number of matches to return (default: 100)",
+        description: "Maximum number of matched lines to return",
       }),
     ),
   },
@@ -494,17 +501,22 @@ export function regGrep(pi: ExtensionAPI): void {
         const sortedNums = [...allNums].sort((a, b) => a - b);
         const indices = sortedNums.map((n) => n - 1).filter((n) => n >= 0);
         if (countOnly) {
+          if (globRegex) {
+            const displayPath = relative(ctx.cwd, absPath).replace(/\\/g, "/");
+            const globPath = relative(globRoot, absPath).replace(/\\/g, "/");
+            if (!globRegex.test(globPath) && !globRegex.test(displayPath)) continue;
+          }
           const norm = await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, signal });
           if (!norm) continue;
           const hit = makeHitFromIndices(norm, relative(ctx.cwd, absPath).replace(/\\/g, "/"), indices, context, validatedRegex, totalForFile, indices.length);
           const display = displayRowsForHit(hit);
           totalRows += display.length;
           for (const r of display) totalBytes += Buffer.byteLength(r, "utf-8") + 1;
-          const remaining = limit - matches;
-          if (remaining > 0) {
-            const add = Math.min(hit.matchCount, remaining);
+          const remainingCountOnly = limit - matches;
+          if (remainingCountOnly > 0) {
+            const add = Math.min(hit.matchCount, remainingCountOnly);
             matches += add;
-            if (hit.matchCount > remaining) limitTruncated = true;
+            if (hit.matchCount > remainingCountOnly) limitTruncated = true;
           } else {
             limitTruncated = true;
           }
@@ -515,13 +527,13 @@ export function regGrep(pi: ExtensionAPI): void {
           limitTruncated = true;
           break;
         }
-        const norm = await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, signal });
-        if (!norm) continue;
         if (globRegex) {
           const displayPath = relative(ctx.cwd, absPath).replace(/\\/g, "/");
           const globPath = relative(globRoot, absPath).replace(/\\/g, "/");
           if (!globRegex.test(globPath) && !globRegex.test(displayPath)) continue;
         }
+        const norm = await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, signal });
+        if (!norm) continue;
         const hit = makeHitFromIndices(norm, relative(ctx.cwd, absPath).replace(/\\/g, "/"), indices, context, validatedRegex, totalForFile, Math.min(totalForFile, remaining));
         if (!hit) continue;
         const display = displayRowsForHit(hit);

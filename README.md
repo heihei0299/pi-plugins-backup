@@ -30,14 +30,14 @@
 
 | 包名 | 版本 | 链接 |
 |------|------|------|
-| @cortexkit/pi-magic-context | 0.41.1 | [npm](https://www.npmjs.com/package/@cortexkit/pi-magic-context) |
+| @cortexkit/pi-magic-context | 0.41.2 | [npm](https://www.npmjs.com/package/@cortexkit/pi-magic-context) |
 | @ff-labs/pi-fff | 0.10.6 | [npm](https://www.npmjs.com/package/@ff-labs/pi-fff) |
-| @gotgenes/pi-permission-system | 29.1.0 | [npm](https://www.npmjs.com/package/@gotgenes/pi-permission-system) |
+| @gotgenes/pi-permission-system | 31.0.1 | [npm](https://www.npmjs.com/package/@gotgenes/pi-permission-system) |
 | @juanibiapina/pi-extension-settings | 0.9.1 | [npm](https://www.npmjs.com/package/@juanibiapina/pi-extension-settings) |
 | @juanibiapina/pi-powerbar | 0.15.0 | [npm](https://www.npmjs.com/package/@juanibiapina/pi-powerbar) |
-| @juicesharp/rpiv-ask-user-question | 2.8.0 | [npm](https://www.npmjs.com/package/@juicesharp/rpiv-ask-user-question) |
-| @juicesharp/rpiv-todo | 2.8.0 | [npm](https://www.npmjs.com/package/@juicesharp/rpiv-todo) |
-| @narumitw/pi-btw | 0.56.0 | [npm](https://www.npmjs.com/package/@narumitw/pi-btw) |
+| @juicesharp/rpiv-ask-user-question | 2.9.0 | [npm](https://www.npmjs.com/package/@juicesharp/rpiv-ask-user-question) |
+| @juicesharp/rpiv-todo | 2.9.0 | [npm](https://www.npmjs.com/package/@juicesharp/rpiv-todo) |
+| @narumitw/pi-btw | 0.56.2 | [npm](https://www.npmjs.com/package/@narumitw/pi-btw) |
 | @narumitw/pi-caffeinate | 0.49.6 | [npm](https://www.npmjs.com/package/@narumitw/pi-caffeinate) |
 | @narumitw/pi-goal | 0.54.4 | [npm](https://www.npmjs.com/package/@narumitw/pi-goal) |
 | @narumitw/pi-lsp | 0.49.6 | [npm](https://www.npmjs.com/package/@narumitw/pi-lsp) |
@@ -49,12 +49,12 @@
 | pi-agent-browser-native | 0.5.0 | [npm](https://www.npmjs.com/package/pi-agent-browser-native) |
 | pi-autoresearch | 1.7.0 | [npm](https://www.npmjs.com/package/pi-autoresearch) |
 | pi-cache-optimizer | 2.8.6 | [npm](https://www.npmjs.com/package/pi-cache-optimizer) |
-| pi-hashline-edit-pro | 2.8.3 | [npm](https://www.npmjs.com/package/pi-hashline-edit-pro) |
-| pi-mcp-adapter | 2.31.0 | [npm](https://www.npmjs.com/package/pi-mcp-adapter) |
+| pi-hashline-edit-pro | 3.0.1 | [npm](https://www.npmjs.com/package/pi-hashline-edit-pro) |
+| pi-mcp-adapter | 2.32.1 | [npm](https://www.npmjs.com/package/pi-mcp-adapter) |
 | pi-rtk-optimizer | 0.9.0 | [npm](https://www.npmjs.com/package/pi-rtk-optimizer) |
 | pi-slopchop | 0.10.1 | [npm](https://www.npmjs.com/package/pi-slopchop) |
 | pi-web-access | 0.27.0 | [npm](https://www.npmjs.com/package/pi-web-access) |
-| pi-workspace-history | 0.3.0 | [npm](https://www.npmjs.com/package/pi-workspace-history) |
+| pi-workspace-history | 0.4.1 | [npm](https://www.npmjs.com/package/pi-workspace-history) |
 
 ### Git 包
 

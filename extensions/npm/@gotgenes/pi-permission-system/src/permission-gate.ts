@@ -1,3 +1,4 @@
+import type { SessionGrantWidth } from "#src/approval-grant";
 import type { DecisionSource } from "#src/authority/decision-source";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 
@@ -13,7 +14,15 @@ export type PermissionGateResult =
   | {
       action: "allow";
       decidedBy: DecisionSource;
-      sessionApproval?: { surface: string; pattern: string };
+      /**
+       * Set when the human granted the ask for the whole session, carrying the
+       * width to record it at.
+       *
+       * One field rather than a `forSession` flag beside a width: the width is
+       * meaningless without the grant, and two optional fields could represent
+       * a width for a grant that never happened.
+       */
+      sessionGrant?: { width: SessionGrantWidth };
     }
   | { action: "block"; decidedBy: DecisionSource; reason: string };
 
@@ -30,11 +39,16 @@ export interface PermissionGateParams {
   promptForApproval: () => Promise<PermissionPromptDecision>;
 
   /**
-   * Session approval suggestion to record when the user selects
-   * "for this session". When present and the decision is `approved_for_session`,
-   * the result carries the suggestion back to the caller for recording.
+   * Whether this ask has a session-approval suggestion to record when the user
+   * selects "for this session".
+   *
+   * A boolean rather than the suggestion itself: the gate decides only whether
+   * a whole-session grant happened, and the caller records the suggestion it
+   * already holds. Handing the gate the value would ask it to name a single
+   * representative `(surface, pattern)`, which a multi-pattern approval has no
+   * way to choose (#810).
    */
-  sessionApproval?: { surface: string; pattern: string };
+  canGrantForSession: boolean;
 
   /** Write a review-log entry. Called for deny and ask-but-unavailable paths. */
   writeLog: (event: string, extra: Record<string, unknown>) => void;
@@ -102,11 +116,15 @@ export async function applyPermissionGate(
         reason: messages.refusedReason(decision),
       };
     }
-    if (decision.state === "approved_for_session" && params.sessionApproval) {
+    if (
+      decision.state === "approved_for_session" &&
+      params.canGrantForSession
+    ) {
       return {
         action: "allow",
         decidedBy,
-        sessionApproval: params.sessionApproval,
+        // Absent means the width every producer chose before #813.
+        sessionGrant: { width: decision.sessionGrantWidth ?? "proven" },
       };
     }
     return { action: "allow", decidedBy };

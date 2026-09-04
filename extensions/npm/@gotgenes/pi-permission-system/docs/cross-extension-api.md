@@ -69,8 +69,11 @@ interface PermissionsService {
     agentName?: string,
   ): PermissionCheckResult;
 
-  /** Query tool-level permission state for pre-filtering before session creation. */
+  /** Query a surface's catch-all permission state — its blanket policy. */
   getToolPermission(toolName: string, agentName?: string): PermissionState;
+
+  /** Whether every value under a tool's surface resolves to deny; use this to pre-filter a tool list. */
+  isToolFullyDenied(toolName: string, agentName?: string): boolean;
 
   /**
    * Register a custom preview formatter for a specific tool name.
@@ -92,6 +95,22 @@ interface PermissionsService {
     toolName: string,
     extractor: (input: Record<string, unknown>) => string | undefined,
   ): () => void;
+
+  /**
+   * The access extractor registered on this node for `toolName`, or
+   * `undefined` when it has none.
+   */
+  getToolAccessExtractor(
+    toolName: string,
+  ): ((input: Record<string, unknown>) => string | undefined) | undefined;
+
+  /**
+   * The preview formatter registered on this node for `toolName`, or
+   * `undefined` when it has none.
+   */
+  getToolInputFormatter(
+    toolName: string,
+  ): ((input: Record<string, unknown>) => string | undefined) | undefined;
 }
 ```
 
@@ -114,13 +133,26 @@ Decomposition needs the tree-sitter parser, which is warmed at `before_agent_sta
 #### `getToolPermission`
 
 Returns `"allow"` | `"deny"` | `"ask"` for a tool name without considering command-level rules.
-Use this to pre-filter a tool list before creating a child session — it avoids calling `checkPermission` per tool and interpreting the full result.
+It reports the surface's own catch-all, so it answers what a surface's blanket policy is.
 
 ```typescript
-const denied = tools.filter(
-  (t) => permissions.getToolPermission(t, agentName) === "deny",
-);
+const blanketPolicy = permissions.getToolPermission("bash", agentName);
 ```
+
+This is not the question to ask when pre-filtering a tool list — use `isToolFullyDenied` for that.
+A surface written as `bash: {"*": "deny", "git *": "ask"}` reports `"deny"` here while `git status` would still be asked about.
+
+#### `isToolFullyDenied`
+
+Returns `true` when every value under the tool's surface resolves to `deny`, and `false` when anything at all could get through.
+Use this to pre-filter a tool list before creating a child session — it avoids calling `checkPermission` per tool and interpreting the full result, and unlike `getToolPermission` it does not withhold a tool that is only partially restricted.
+
+```typescript
+const usable = tools.filter((t) => !permissions.isToolFullyDenied(t, agentName));
+```
+
+Rule ordering is honored (last-match-wins), so an exception written after a `deny` catch-all keeps the tool reachable while one written before it does not.
+It considers config-layer rules only; a runtime session approval does not change the answer.
 
 #### `registerToolInputFormatter`
 
@@ -279,6 +311,22 @@ const dispose = permissions.registerToolAccessExtractor("ffgrep", (input) =>
 
 Registration rules mirror `registerToolInputFormatter`: one extractor per tool name (a second `register` for the same name throws), and the returned disposer is identity-guarded.
 The extractor must not throw — guard your parsing and return `undefined` on anything unexpected.
+
+#### `getToolAccessExtractor` and `getToolInputFormatter`
+
+Read back what a node has registered for a tool.
+
+```typescript
+getToolAccessExtractor(toolName: string): ToolAccessExtractor | undefined;
+getToolInputFormatter(toolName: string): ToolInputFormatter | undefined;
+```
+
+These are the read face of the two **fact-shaping** registries, and unlike every other surface here they are meant to be read across a node boundary.
+An extractor produces a fact about a call (the path it touches) and a formatter produces display text; neither decides anything, so a node whose own registry has no entry may resolve an ancestor's service and use its answer.
+The permission system does exactly that internally: a subagent child that is missing an extractor for a tool falls back to its ancestors in the same process, so excluding an extractor's provider from child sessions cannot leave that tool's path invisible to the child's gates ([ADR 0012] decision 1, the fact-shaping clause).
+
+There is deliberately **no** equivalent reader for `registerAuthorizer`.
+A chain link returns a verdict, and live authority converges at the adjudicating node ([ADR 0007] §7) — inheriting one would run authority an operator's own extension exclusion removed.
 
 #### Subagent session registration
 
@@ -514,3 +562,7 @@ pi.on("session_shutdown", () => {
 
 A registration needs no branch on `adjudicatesLocally`.
 Formatters and access extractors are read by every node's own gates, and a chain link registered on a relaying node is accepted (its disposer works) and recorded in the review log as `authorizer_link_vacant` rather than refused — so registering everywhere is the correct default.
+Registering on _every_ node also stays the best practice for a formatter or extractor provider: the ancestor fallback is a repair for a node that could not register, not a reason to register in one place on purpose.
+
+[ADR 0007]: https://github.com/gotgenes/pi-packages/blob/main/packages/pi-permission-system/docs/decisions/0007-model-judge-authorizer-chain-adr.md
+[ADR 0012]: https://github.com/gotgenes/pi-packages/blob/main/packages/pi-permission-system/docs/decisions/0012-cross-node-extension-contract.md

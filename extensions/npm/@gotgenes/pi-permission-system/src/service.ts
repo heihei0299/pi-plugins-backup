@@ -99,12 +99,16 @@ export interface PermissionQuery {
   ): PermissionCheckResult;
 
   /**
-   * Query the tool-level permission state for pre-filtering tools before
-   * creating a child session.
+   * Query a surface's catch-all permission state — its blanket policy.
    *
    * Returns `"deny"` | `"allow"` | `"ask"` based on the composed policy.
    * Does not consider command-level rules (e.g. per-bash-command patterns) —
    * use `checkPermission` for runtime invocation gates.
+   *
+   * This is **not** the question to ask when pre-filtering a tool list: a
+   * partially permissive surface such as `bash: {"*": "deny", "git *": "ask"}`
+   * answers `"deny"` here while `git status` would still be asked about. Use
+   * {@link PermissionsService.isToolFullyDenied} for that.
    *
    * @param toolName  - Tool name (e.g. `"bash"`, `"read"`, `"my-extension:tool"`).
    * @param agentName - Optional agent name for per-agent policy resolution.
@@ -126,6 +130,24 @@ export interface PermissionQuery {
  * rules internally.
  */
 export interface PermissionsService extends PermissionQuery {
+  /**
+   * Whether every value under a tool's surface resolves to `deny`.
+   *
+   * This is the question to ask before withholding a tool from a child
+   * session's tool list, and it is not `getToolPermission`: that reports the
+   * surface's own catch-all, so a partially permissive surface such as
+   * `bash: {"*": "deny", "git *": "ask"}` reads as `"deny"` while `git status`
+   * would still be asked about.
+   *
+   * Rule ordering is honored (last-match-wins), so an exception written *after*
+   * a `deny` catch-all keeps the tool reachable and one written *before* it
+   * does not.
+   *
+   * @param toolName  - Tool name (e.g. `"bash"`, `"read"`, `"my-extension:tool"`).
+   * @param agentName - Optional agent name for per-agent policy resolution.
+   */
+  isToolFullyDenied(toolName: string, agentName?: string): boolean;
+
   /**
    * Register a custom preview formatter for a specific tool name.
    *
@@ -167,6 +189,32 @@ export interface PermissionsService extends PermissionQuery {
     toolName: string,
     extractor: ToolAccessExtractor,
   ): () => void;
+
+  /**
+   * The access extractor registered on this node for `toolName`, or
+   * `undefined` when it has none.
+   *
+   * This is the read face of a **fact-shaping** registry, and unlike the
+   * authority surfaces it is meant to be read across a node boundary: an
+   * extractor produces a fact about a call (the path it touches) and decides
+   * nothing, so an in-process child whose own registry has no entry may
+   * resolve an ancestor node's service and use its answer to complete the
+   * child's own fact-gathering (ADR 0012 decision 1).
+   *
+   * The same does not hold for {@link registerAuthorizer}: a link produces a
+   * verdict, and live authority converges at the adjudicating node (ADR 0007
+   * §7). There is deliberately no reader for it.
+   */
+  getToolAccessExtractor(toolName: string): ToolAccessExtractor | undefined;
+
+  /**
+   * The preview formatter registered on this node for `toolName`, or
+   * `undefined` when it has none.
+   *
+   * Fact-shaping, and cross-node readable for the same reason as
+   * {@link getToolAccessExtractor}.
+   */
+  getToolInputFormatter(toolName: string): ToolInputFormatter | undefined;
 
   /**
    * Register a named live-authority chain link (ADR 0007 §4).

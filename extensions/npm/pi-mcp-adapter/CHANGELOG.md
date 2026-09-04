@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.32.1] - 2026-09-01
+
+### Fixed
+- The published package now includes the updated public helper build artifacts for the `2.32.0` config and MCP Apps changes.
+
+## [2.32.0] - 2026-09-01
+
+### Highlights
+- You can now enable and disable MCP servers directly from the `/mcp` panel.
+- `/mcp setup` is clearer about where new shared servers will be saved.
+- MCP App views that use browser storage now render reliably without exposing host session access.
+- Long-running sessions handle MCP 2026 input flows, catalog updates, and UI resource refreshes more reliably.
+- OAuth reuse and per-server status messages are less confusing.
+
+### Added
+- The `/mcp` panel now supports enabling and disabling servers in place with `ctrl+d` on a server row. Saving persists the `disabled` flag to the project Pi layer and reloads the session, matching `/mcp disable` and `/mcp enable`. Thanks to [@ericykim](https://github.com/ericykim) for PR #479.
+
+### Changed
+- `/mcp setup` now lets you choose project `.mcp.json` or global `~/.config/mcp/mcp.json` as the write target for new shared MCP servers, while keeping Pi-owned files and compatibility inputs in the advanced flow. The bundled `mcp-scripting` skill is manual-only by default. Thanks to [@w-winter](https://github.com/w-winter) for #477.
+
+### Fixed
+- MCP 2026 multi-round input flows now work more reliably across proxy, direct, resource, and UI-resource calls, with clearer no-UI errors and cancellation cleanup.
+- MCP 2026-07-28 catalog listens now recover from dropped listens, refresh quietly when catalogs change, and notify open UIs when resources update. (#468)
+- MCP App views now load through a separate loopback sandbox proxy origin so storage APIs work without exposing host session capabilities. Thanks to [@drewbitt](https://github.com/drewbitt) for #480.
+- Implicit OAuth now reuses URL-bound stored credentials while preserving anonymous fallback. Thanks to [@wilt00](https://github.com/wilt00) for #471.
+- Per-server proxy lists now distinguish cached lazy tools from servers that need authentication while preserving active failure backoff. Thanks to [@inattendu](https://github.com/inattendu) for PR #474.
+
 ## [2.31.0] - 2026-08-28
 
 ### Highlights
