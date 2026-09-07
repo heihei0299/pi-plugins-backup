@@ -15,7 +15,6 @@ import { type FileIdentity } from "./fs-write";
 import { applyEdit,
   lineHashes,
   resEdit,
-  parseHashRef,
   MAX_HASH_LINES,
   RangeStaleError,
   AnchorMismatchError,
@@ -23,12 +22,13 @@ import { applyEdit,
   type NEdit,
 } from "./hashline";
 import { commitEdit } from "./commit";
-import type { RMetrics } from "./replace-response";
+import { withDedupRows, type RMetrics } from "./replace-response";
 import {
   type RPreview,
   type RRState,
 } from "./replace-render";
-import { loadHashStore, findSnapshotPaths, findServedPaths, type HashStore } from "./hash-store";
+import { loadHashStore, type HashStore } from "./hash-store";
+import { resolveReplacePath } from "./missing-path";
 import { getServed, recordServedSafe } from "./served";
 import { noopPayloadKey, markBoundaryNoop, consumeBoundaryBypass, clearBoundaryBypass } from "./boundary-bypass";
 import { queuedEdit, editToolBase, editRenderCallWrapper, editRenderResultWrapper } from "./edit-common";
@@ -64,44 +64,11 @@ export interface PipelineResult {
   hadBoundaryDedup: boolean;
   boundaryRemovedLines: number;
   boundaryRemovedLineTexts: string[];
+  boundaryDedupAbove: string[];
+  boundaryDedupBelow: string[];
   identity: FileIdentity;
 }
 
-async function resolveMissingPath(
-  request: Record<string, unknown>,
-): Promise<{ path: string; warning: string } | undefined> {
-  if (typeof request.path === "string") return undefined;
-  const from = request.remove_from;
-  const to = request.remove_to;
-  if (typeof from !== "string" || typeof to !== "string") return undefined;
-  const hashes: string[] = [];
-  for (const ref of [from, to]) {
-    try {
-      hashes.push(parseHashRef(ref).hash);
-    } catch {
-      return undefined;
-    }
-  }
-  let store: HashStore;
-  try {
-    store = await loadHashStore();
-  } catch {
-    return undefined;
-  }
-  const matches = [...new Set([...findSnapshotPaths(store, hashes), ...findServedPaths(store, hashes)])];
-  if (matches.length === 1) {
-    return {
-      path: matches[0]!,
-      warning: `[E_BAD_SHAPE] Missing "path" resolved to ${matches[0]}.`,
-    };
-  }
-  if (matches.length > 1) {
-    throw new Error(
-      `[E_BAD_SHAPE] Edit request requires a non-empty "path" string; the anchors match multiple known files: ${matches.join(", ")}.`,
-    );
-  }
-  return undefined;
-}
 
 export interface ExecPipelineOptions {
   accessMode?: number;
@@ -163,7 +130,7 @@ export async function execPipeline(
   let replacementLines = params.replacement_lines;
   const expandedReplacement = decodeStringArray(replacementLines);
   if (expandedReplacement) {
-    editWarnings.push('[E_BAD_SHAPE] Unwrapped JSON array syntax from a replacement_lines element.');
+    editWarnings.push('[W_BAD_SHAPE] Unwrapped JSON array syntax from a replacement_lines element.');
     replacementLines = expandedReplacement;
   }
   const edit = resEdit(
@@ -216,6 +183,9 @@ export async function execPipeline(
     edit, originalHashes, isNoop, anchorResult.autoFixes?.length ?? 0,
   );
 
+  const sortedFixes = [...(anchorResult.autoFixes ?? [])].sort((a, b) => a.removedLineIndex - b.removedLineIndex);
+  const aboveFixes = sortedFixes.filter((fix) => fix.kind === "leading" || fix.kind === "last-new-before");
+  const belowFixes = sortedFixes.filter((fix) => fix.kind === "trailing" || fix.kind === "first-new-after");
   return {
     path,
     originalNormalized,
@@ -233,7 +203,9 @@ export async function execPipeline(
     totalRemovedLines,
     hadBoundaryDedup: (anchorResult.autoFixes?.length ?? 0) > 0,
     boundaryRemovedLines: anchorResult.autoFixes?.length ?? 0,
-    boundaryRemovedLineTexts: anchorResult.autoFixes?.map((fix) => fix.removedLine) ?? [],
+    boundaryRemovedLineTexts: sortedFixes.map((fix) => fix.removedLine),
+    boundaryDedupAbove: aboveFixes.map((fix) => fix.removedLine),
+    boundaryDedupBelow: belowFixes.map((fix) => fix.removedLine),
     identity,
   };
 }
@@ -242,9 +214,11 @@ export function previewFromPipe(pipe: PipelineResult): RPreview {
   if (pipe.originalNormalized === pipe.result) {
     return {
       error: `No changes made to ${pipe.path}. The edit produced identical content.`,
+      path: pipe.path,
     };
   }
-  return { diff: genDiff(pipe.originalNormalized, pipe.result, 4, pipe.resultHashes, pipe.originalHashes).diff };
+  const base = genDiff(pipe.originalNormalized, pipe.result, 4, pipe.resultHashes, pipe.originalHashes);
+  return { diff: withDedupRows(base.diff, base.lineNumbers, pipe.boundaryDedupAbove, pipe.boundaryDedupBelow).diff, path: pipe.path };
 }
 export function previewError(error: unknown): RPreview {
   return { error: error instanceof Error ? error.message : String(error) };
@@ -256,6 +230,10 @@ export async function compPreview(
 ): Promise<RPreview> {
   try {
     const normalized = normReq(request);
+    if (isRec(normalized)) {
+      const resolution = await resolveReplacePath(normalized);
+      if (resolution) normalized.path = resolution.path;
+    }
     assertReq(normalized);
     const pipe = await execPipeline(
       normalized,
@@ -292,7 +270,7 @@ export function buildToolDef(): ToolDef {
     renderResult: editRenderResultWrapper,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const canonical = normReq(params);
-      const resolution = isRec(canonical) ? await resolveMissingPath(canonical) : undefined;
+      const resolution = isRec(canonical) ? await resolveReplacePath(canonical) : undefined;
       if (resolution && isRec(canonical)) {
         canonical.path = resolution.path;
       }
@@ -308,7 +286,7 @@ export function buildToolDef(): ToolDef {
           { accessMode: constants.R_OK | constants.W_OK, signal, skipBoundaryDedup: boundaryBypass },
         );
         const appliedWarnings = boundaryBypass
-          ? ["[E_BOUNDARY_BYPASS] Boundary dedup was off for this call and is back on."]
+          ? ["[W_BOUNDARY_BYPASS] Boundary dedup was off for this call and is back on."]
           : [];
         return commitEdit(pipe, {
           path,

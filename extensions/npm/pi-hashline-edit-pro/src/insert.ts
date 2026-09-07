@@ -10,6 +10,7 @@ import { loadP, loadGuide } from "./prompts";
 import { normReq } from "./payload-contract";
 import { decodeStringArray, isRec, rejectUnknownFields, splitLines } from "./utils";
 import { clearBoundaryBypass } from "./boundary-bypass";
+import { resolveInsertPath } from "./missing-path";
 import type { RPreview, RRState } from "./replace-render";
 import { queuedEdit, editToolBase, editRenderCallWrapper, editRenderResultWrapper } from "./edit-common";
 
@@ -43,10 +44,12 @@ export function assertInsertReq(request: unknown): asserts request is InsertReq 
 
 const insertToolSchema = Type.Object(
   {
-    path: Type.String({
-      description:
-        "Path to the file to edit",
-    }),
+    path: Type.Optional(
+      Type.String({
+        description:
+          "Path to edit; always provide it explicitly — it is only auto-resolved from the anchors as a fallback.",
+      }),
+    ),
     anchor: Type.String({
       description:
         'Bare 4-char anchor from a read row like `Hasu│content`, never the content. A pasted `+Hasu│x` diff row or `anchor│` prefix is stripped with a warning. The anchor line is preserved; lines go after or before it.',
@@ -108,6 +111,10 @@ export async function insertPreview(request: unknown, cwd: string, signal?: Abor
       const expanded = decodeStringArray(normalized.lines);
       if (expanded) normalized.lines = expanded;
     }
+    if (isRec(normalized)) {
+      const resolution = await resolveInsertPath(normalized);
+      if (resolution) normalized.path = resolution.path;
+    }
     assertInsertReq(normalized);
     const { ref } = parseInsertAnchor(normalized.anchor);
     const preload = await readNormFile(normalized.path, cwd, {
@@ -138,7 +145,7 @@ function getInsertInput(args: unknown): { path?: string; anchor?: string; direct
   } catch {
     return null;
   }
-  if (!isRec(normalized) || typeof normalized.path !== "string") return null;
+  if (!isRec(normalized)) return null;
   if (
     typeof normalized.anchor !== "string" ||
     (normalized.direction !== "before" && normalized.direction !== "after") ||
@@ -148,10 +155,10 @@ function getInsertInput(args: unknown): { path?: string; anchor?: string; direct
     return null;
   }
   return {
-    path: normalized.path,
-    anchor: normalized.anchor,
-    direction: normalized.direction,
-    lines: normalized.lines,
+    ...(typeof normalized.path === "string" ? { path: normalized.path } : {}),
+    anchor: normalized.anchor as string,
+    direction: normalized.direction as "before" | "after",
+    lines: normalized.lines as string[],
   };
 }
 
@@ -174,10 +181,12 @@ export function buildInsertToolDef(): InsertToolDef {
       if (isRec(canonical)) {
         const expanded = decodeStringArray(canonical.lines);
         if (expanded) {
-          insertWarnings.push('[E_BAD_SHAPE] Unwrapped JSON array syntax from a lines element.');
+          insertWarnings.push('[W_BAD_SHAPE] Unwrapped JSON array syntax from a lines element.');
           canonical.lines = expanded;
         }
       }
+      const resolution = isRec(canonical) ? await resolveInsertPath(canonical) : undefined;
+      if (resolution && isRec(canonical)) canonical.path = resolution.path;
       assertInsertReq(canonical);
       const req = canonical;
       const path = req.path;
@@ -203,7 +212,7 @@ export function buildInsertToolDef(): InsertToolDef {
           verb: "inserted",
           noopNoun: "Insertion",
           foldedAnchorLines: anchorLine === undefined ? 0 : 1,
-          prefixWarnings: [...anchorWarnings, ...insertWarnings],
+          prefixWarnings: [...(resolution ? [resolution.warning] : []), ...anchorWarnings, ...insertWarnings],
           onApplied: () => clearBoundaryBypass(mutationTargetPath),
         });
       });

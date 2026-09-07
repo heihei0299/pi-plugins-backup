@@ -1,6 +1,7 @@
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text, truncateToWidth, type KeyId } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import pLimit from "p-limit";
 import { StringEnum, type ImageContent, type TextContent } from "@earendil-works/pi-ai/compat";
 import type { ExtractedContent, ExtractOptions } from "./extract.ts";
 import { normalizeFetchContentParams } from "./fetch-params.ts";
@@ -64,6 +65,7 @@ import { isSearXNGAvailable } from "./searxng.ts";
 import { isDuckDuckGoAvailable } from "./duckduckgo.ts";
 import { isAnySearchAvailable } from "./anysearch.ts";
 import { isXaiSearchAvailable } from "./xai-search.ts";
+import { isMistralAvailable } from "./mistral-search.ts";
 import { isKimiSearchAvailable } from "./kimi-search.ts";
 import { isBrightDataAvailable } from "./brightdata.ts";
 import { isSerpBaseAvailable } from "./serpbase.ts";
@@ -229,6 +231,23 @@ const DEFAULT_CURATOR_TIMEOUT_SECONDS = 20;
 const DEFAULT_REMOTE_CURATOR_TIMEOUT_SECONDS = 60;
 const MAX_CURATOR_TIMEOUT_SECONDS = 600;
 const MAX_SUMMARY_GENERATION_DEADLINE_MS = 600_000;
+const SEARCH_QUERY_CONCURRENCY = 3;
+
+// Limit each batch independently so separate Pi tool calls can still run in parallel.
+function runSearchQueries<T>(queries: string[], run: (query: string, index: number) => Promise<T>): Promise<T[]> {
+	const limit = pLimit(SEARCH_QUERY_CONCURRENCY);
+	return Promise.all(queries.map((query, index) => limit(() => run(query, index))));
+}
+
+// Keep primary query indexes stable for curator slots, then interleave additional
+// provider entries deterministically instead of assigning by completion order.
+function curatorResultIndex(queryIndex: number, entryIndex: number, queryCount: number): number {
+	return entryIndex * queryCount + queryIndex;
+}
+
+function curatorResultIndexCapacity(queryCount: number): number {
+	return queryCount * RESOLVED_SEARCH_PROVIDERS.length;
+}
 
 function searchProviderSchema(description: string) {
 	return Type.Union([
@@ -423,6 +442,7 @@ async function getProviderAvailability(ctx: ExtensionContext): Promise<ProviderA
 		anysearch: isAnySearchAvailable(),
 		xcrawl: isXcrawlAvailable(),
 		xai: await isXaiSearchAvailable(ctx),
+		mistral: isMistralAvailable(),
 		brightdata: isBrightDataAvailable(),
 		serpbase: isSerpBaseAvailable(),
 		serper: isSerperAvailable(),
@@ -1069,7 +1089,8 @@ export default function (pi: ExtensionAPI) {
 		const fetchId = generateId();
 		const controller = new AbortController();
 		pendingFetches.set(fetchId, controller);
-		runWithProxy(proxy, () => fetchAllContent(urls, controller.signal, withRegisteredFetchOptions(undefined, registeredToolNames, proxy)))
+		Promise.resolve()
+			.then(() => runWithProxy(proxy, () => fetchAllContent(urls, controller.signal, withRegisteredFetchOptions(undefined, registeredToolNames, proxy))))
 			.then((fetched) => {
 				if (!sessionActive || !pendingFetches.has(fetchId)) return;
 				const data = {
@@ -1340,7 +1361,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const selected = filterByQueryIndices(payload.selectedQueryIndices, resultsByIndex).results;
-		const fallbackResults = selected.length > 0 ? selected : [...resultsByIndex.values()];
+		const fallbackResults = selected.length > 0 ? selected : orderedSearchResults(resultsByIndex);
 		const deterministic = buildDeterministicSummary(fallbackResults);
 		return {
 			approvedSummary: deterministic.summary,
@@ -1395,6 +1416,11 @@ export default function (pi: ExtensionAPI) {
 
 		const searchId = storeAndPublishSearch(opts.results);
 		const isBackgroundFetch = fetchId !== null && !hasInlineReady;
+		// The model only sees `content`, not `details`: surface the id it needs to
+		// call get_search_content, the same way fetch_content does.
+		if (getSearchContentEnabled && !hasApprovedSummary) {
+			output += `\n---\nResults stored as responseId "${searchId}". Use ${toolNames.getSearchContent}({ responseId: "${searchId}", queryIndex: 0 }) to retrieve them.`;
+		}
 
 		return {
 			content: [{ type: "text", text: output.trim() }],
@@ -1452,8 +1478,14 @@ export default function (pi: ExtensionAPI) {
 		return { results: filteredResults, urls: filteredUrls };
 	}
 
+	function orderedSearchResults(resultsByIndex: Map<number, QueryResultData>): QueryResultData[] {
+		return [...resultsByIndex.entries()]
+			.sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
+			.map(([, result]) => result);
+	}
+
 	function collectAllResultsAndUrls(resultsByIndex: Map<number, QueryResultData>) {
-		const results = [...resultsByIndex.values()];
+		const results = orderedSearchResults(resultsByIndex);
 		const urls: string[] = [];
 		for (const result of results) {
 			for (const source of result.results) {
@@ -1492,6 +1524,7 @@ export default function (pi: ExtensionAPI) {
 			handle = await startCuratorServer(
 				{
 					queries: pc.queryList,
+					initialResultIndexCapacity: curatorResultIndexCapacity(pc.queryList.length),
 					sessionToken,
 					timeout: pc.timeoutSeconds,
 					availableProviders: pc.availableProviders,
@@ -1573,7 +1606,7 @@ export default function (pi: ExtensionAPI) {
 						} else {
 							const conn = activeCurators.get(callId)?.getConnectionState();
 							pc.finish(buildCurationCancelledReturn(reason, {
-								queries: Array.from(pc.searchResults.values()),
+								queries: orderedSearchResults(pc.searchResults),
 								queryCount: pc.queryList.length,
 								browserConnected: conn?.browserConnected,
 								lastHeartbeatAgeMs: conn?.lastHeartbeatAgeMs,
@@ -1750,19 +1783,19 @@ export default function (pi: ExtensionAPI) {
 		name: toolNames.webSearch,
 		label: "Web Search",
 		description:
-			`Search the web using OpenAI, Brave, Parallel, Parallel MCP, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, SearXNG, DuckDuckGo, Exa, Perplexity, Gemini, Kimi, AnySearch, XCrawl, Valyu, xAI, Bright Data, SerpBase, or Serper. Pass a provider array to search only those providers simultaneously, or use provider "all" to search every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Bright Data, SerpBase, and Serper. Returns an AI-synthesized answer with source citations. OpenAI search uses a Codex subscription or OpenAI API key; Kimi search uses a Kimi Code Plan authenticated through /login kimi-coding; xAI search uses a SuperGrok/X Premium subscription or xAI API key. Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Bright Data, SerpBase, and Serper are available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, SearXNG is preferred first for local/private search. When the active Pi model is openai-codex, Codex-backed OpenAI search is preferred next. Otherwise Exa is preferred before OpenAI, then Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, Perplexity, Gemini API, or Gemini Web.`,
+			`Search the web using OpenAI, Brave, Parallel, Parallel MCP, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, SearXNG, DuckDuckGo, Exa, Perplexity, Gemini, Kimi, AnySearch, XCrawl, Valyu, xAI, Mistral, Bright Data, SerpBase, or Serper. Pass a provider array to search only those providers simultaneously, or use provider "all" to search every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Mistral, Bright Data, SerpBase, and Serper. Returns an AI-synthesized answer with source citations. OpenAI search uses a Codex subscription or OpenAI API key; Kimi search uses a Kimi Code Plan authenticated through /login kimi-coding; xAI search uses a SuperGrok/X Premium subscription or xAI API key; Mistral search uses a Mistral API key. Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Mistral, Bright Data, SerpBase, and Serper are available only when explicitly selected. For comprehensive research, prefer queries (plural) with 2-4 varied angles over a single query — each query gets its own synthesized answer, so varying phrasing and scope gives much broader coverage. When includeContent is true, full page content is fetched in the background. Searches auto-open the interactive browser curator and stream results live; set workflow to "none" to skip curation or "auto-summary" for a model-generated summary without the browser curator. The configured provider is used when provider is omitted or set to auto; omit provider unless explicitly overriding it. Without a configured provider, SearXNG is preferred first for local/private search. When the active Pi model is openai-codex, Codex-backed OpenAI search is preferred next. Otherwise Exa is preferred before OpenAI, then Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Kagi, Bocha, Ollama, Perplexity, Gemini API, or Gemini Web.`,
 		promptSnippet:
 			"Use for web research questions. Prefer {queries:[...]} with 2-4 varied angles over a single query for broader coverage. Omit provider unless explicitly overriding the configured default.",
 		parameters: Type.Object({
 			query: Type.Optional(Type.String({ description: "Single search query. For research tasks, prefer 'queries' with multiple varied angles instead." })),
-			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched in sequence, each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
+			queries: Type.Optional(Type.Array(Type.String(), { description: "Multiple queries searched concurrently (up to three at a time), each returning its own synthesized answer. Prefer this for research — vary phrasing, scope, and angle across 2-4 queries to maximize coverage. Good: ['React vs Vue performance benchmarks 2026', 'React vs Vue developer experience comparison', 'React ecosystem size vs Vue ecosystem']. Bad: ['React vs Vue', 'React vs Vue comparison', 'React vs Vue review'] (too similar, redundant results)." })),
 			numResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Results per query (default: 5, max: 20)" })),
 			includeContent: Type.Optional(Type.Boolean({ description: "Fetch full page content (async)" })),
 			recencyFilter: Type.Optional(
 				StringEnum(["day", "week", "month", "year"], { description: "Filter by recency" }),
 			),
 			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains (prefix with - to exclude)" })),
-			provider: Type.Optional(searchProviderSchema("Search provider or non-empty list of providers to search simultaneously; use all to search every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Bright Data, SerpBase, and Serper, omit this field to use the configured provider, or use auto when none is configured")),
+			provider: Type.Optional(searchProviderSchema("Search provider or non-empty list of providers to search simultaneously; use all to search every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Mistral, Bright Data, SerpBase, and Serper, omit this field to use the configured provider, or use auto when none is configured")),
 			workflow: Type.Optional(
 				StringEnum(["none", "summary-review", "auto-summary"], {
 					description: "Search workflow mode: none = no curator, summary-review = open curator with auto summary draft (default), auto-summary = generate summary without opening curator",
@@ -1809,7 +1842,6 @@ export default function (pi: ExtensionAPI) {
 				const searchResults = new Map<number, QueryResultData>();
 				const resultSlots = new Map<number, number>();
 				const allInlineContent: ExtractedContent[] = [];
-				let nextResultIndex = queryList.length;
 				const searchAbort = new AbortController();
 				const searchSignal = signal
 					? AbortSignal.any([signal, searchAbort.signal])
@@ -1876,7 +1908,7 @@ export default function (pi: ExtensionAPI) {
 					if (cancelled) return;
 					const conn = activeCurators.get(callId)?.getConnectionState();
 					finish(buildCurationCancelledReturn(reason, {
-						queries: Array.from(searchResults.values()),
+						queries: orderedSearchResults(searchResults),
 						queryCount: queryList.length,
 						browserConnected: conn?.browserConnected,
 						lastHeartbeatAgeMs: conn?.lastHeartbeatAgeMs,
@@ -1893,15 +1925,16 @@ export default function (pi: ExtensionAPI) {
 				signal?.addEventListener("abort", onAbort, { once: true });
 				pc.browserPromise = openCuratorBrowser(callId, pc, ctx, false);
 
-				for (let qi = 0; qi < queryList.length; qi++) {
-					if (signal?.aborted || cancelled || searchAbort.signal.aborted) break;
+				let completedSearches = 0;
+				await runSearchQueries(queryList, async (query, qi) => {
+					if (signal?.aborted || cancelled || searchAbort.signal.aborted) return;
 					onUpdate?.({
-						content: [{ type: "text", text: `Searching ${qi + 1}/${queryList.length}: "${queryList[qi]}"...` }],
-						details: { phase: "searching", progress: qi / queryList.length, currentQuery: queryList[qi] },
+						content: [{ type: "text", text: `Searching "${query}" (${completedSearches}/${queryList.length} complete)...` }],
+						details: { phase: "searching", progress: completedSearches / queryList.length, currentQuery: query },
 					});
 					const requestedProvider = pc.searchProvider;
 					try {
-						const response = await search(queryList[qi], {
+						const response = await search(query, {
 							provider: requestedProvider,
 							numResults: params.numResults,
 							recencyFilter,
@@ -1910,40 +1943,48 @@ export default function (pi: ExtensionAPI) {
 							signal: searchSignal,
 							extensionContext: ctx,
 						});
-						if (signal?.aborted || cancelled || searchAbort.signal.aborted) break;
+						if (signal?.aborted || cancelled || searchAbort.signal.aborted) return;
 						if (response.inlineContent) allInlineContent.push(...response.inlineContent);
 						const entries = toCuratorSearchEntries(response);
 						const curator = activeCurators.get(callId);
 						for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
 							const entry = entries[entryIndex];
-							const resultIndex = entryIndex === 0 ? qi : nextResultIndex++;
+							const resultIndex = curatorResultIndex(qi, entryIndex, queryList.length);
 							const indexedEntry: IndexedCuratorSearchEntry = {
 								...entry,
 								queryIndex: resultIndex,
-								query: queryList[qi],
+								query,
 							};
 							searchResults.set(resultIndex, indexedCuratorEntryToQueryResult(indexedEntry));
 							resultSlots.set(resultIndex, qi);
 							if (curator) {
 								if (entry.error) {
-									curator.pushError(resultIndex, entry.error, entry.provider, { query: queryList[qi], slotIndex: qi });
+									curator.pushError(resultIndex, entry.error, entry.provider, { query, slotIndex: qi });
 								} else {
-									curator.pushResult(resultIndex, { ...entry, query: queryList[qi], slotIndex: qi });
+									curator.pushResult(resultIndex, { ...entry, query, slotIndex: qi });
 								}
 							}
 						}
 					} catch (err) {
-						if (signal?.aborted || cancelled || searchAbort.signal.aborted) break;
+						if (signal?.aborted || cancelled || searchAbort.signal.aborted) return;
 						const message = err instanceof Error ? err.message : String(err);
 						const failedProvider = toCuratorProvider(requestedProvider);
-						searchResults.set(qi, { query: queryList[qi], answer: "", results: [], error: message, provider: failedProvider });
+						searchResults.set(qi, { query, answer: "", results: [], error: message, provider: failedProvider });
 						resultSlots.set(qi, qi);
 						const curator = activeCurators.get(callId);
 						if (curator) {
-							curator.pushError(qi, message, failedProvider, { query: queryList[qi], slotIndex: qi });
+							curator.pushError(qi, message, failedProvider, { query, slotIndex: qi });
+						}
+					} finally {
+						completedSearches++;
+						if (!signal?.aborted && !cancelled && !searchAbort.signal.aborted) {
+							onUpdate?.({
+								content: [{ type: "text", text: `Completed ${completedSearches}/${queryList.length} searches.` }],
+								details: { phase: "searching", progress: completedSearches / queryList.length, currentQuery: query },
+							});
 						}
 					}
-				}
+				});
 
 				if (signal?.aborted || cancelled || searchAbort.signal.aborted) {
 					cancel();
@@ -1983,17 +2024,16 @@ export default function (pi: ExtensionAPI) {
 				return promise;
 			}
 
-			const searchResults: QueryResultData[] = [];
+			let completedSearches = 0;
 			const allUrls: string[] = [];
 			const allInlineContent: ExtractedContent[] = [];
 			const resolvedProvider = resolveRequestedProvider(params.provider);
 
-			for (let i = 0; i < queryList.length; i++) {
-				const query = queryList[i];
-
+			const queryResponses = await runSearchQueries(queryList, async (query) => {
+				signal?.throwIfAborted();
 				onUpdate?.({
-					content: [{ type: "text", text: `Searching ${i + 1}/${queryList.length}: "${query}"...` }],
-					details: { phase: "search", progress: i / queryList.length, currentQuery: query },
+					content: [{ type: "text", text: `Searching "${query}" (${completedSearches}/${queryList.length} complete)...` }],
+					details: { phase: "search", progress: completedSearches / queryList.length, currentQuery: query },
 				});
 
 				try {
@@ -2007,19 +2047,31 @@ export default function (pi: ExtensionAPI) {
 						extensionContext: ctx,
 					});
 
-					searchResults.push({ query, answer, results, error: null, provider });
-					for (const r of results) {
-						if (!allUrls.includes(r.url)) {
-							allUrls.push(r.url);
-						}
-					}
-					if (inlineContent) allInlineContent.push(...inlineContent);
+					return { result: { query, answer, results, error: null, provider } satisfies QueryResultData, inlineContent };
 				} catch (err) {
 					if (signal?.aborted || isAbortError(err)) throw err;
 					const message = err instanceof Error ? err.message : String(err);
 					const requestedProvider = toCuratorProvider(resolvedProvider);
-					searchResults.push({ query, answer: "", results: [], error: message, provider: requestedProvider });
+					return {
+						result: { query, answer: "", results: [], error: message, provider: requestedProvider } satisfies QueryResultData,
+						inlineContent: undefined,
+					};
+				} finally {
+					completedSearches++;
+					if (!signal?.aborted) {
+						onUpdate?.({
+							content: [{ type: "text", text: `Completed ${completedSearches}/${queryList.length} searches.` }],
+							details: { phase: "search", progress: completedSearches / queryList.length, currentQuery: query },
+						});
+					}
 				}
+			});
+			const searchResults = queryResponses.map(response => response.result);
+			for (const response of queryResponses) {
+				for (const result of response.result.results) {
+					if (!allUrls.includes(result.url)) allUrls.push(result.url);
+				}
+				if (response.inlineContent) allInlineContent.push(...response.inlineContent);
 			}
 
 			let approvedSummary: string | undefined;
@@ -2337,7 +2389,7 @@ export default function (pi: ExtensionAPI) {
 			fetchContent: Type.Optional(Type.Boolean({ description: "Fetch up to 5 result pages for exact passage extraction." })),
 			recencyFilter: Type.Optional(StringEnum(["day", "week", "month", "year"], { description: "Filter by recency." })),
 			domainFilter: Type.Optional(Type.Array(Type.String(), { description: "Limit to domains; prefix with - to exclude." })),
-			provider: Type.Optional(searchProviderSchema("Search provider or non-empty list of providers to search simultaneously; all searches every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Bright Data, SerpBase, and Serper")),
+			provider: Type.Optional(searchProviderSchema("Search provider or non-empty list of providers to search simultaneously; all searches every eligible provider except Parallel MCP, DuckDuckGo, Kimi, AnySearch, XCrawl, Valyu, xAI, Mistral, Bright Data, SerpBase, and Serper")),
 			proxy: Type.Optional(Type.String({
 				description: "http(s) proxy URL (e.g. http://host:port) used for every outbound request in this call (search APIs and result-page fetches). Empty string forces direct access.",
 			})),
@@ -3163,6 +3215,7 @@ export default function (pi: ExtensionAPI) {
 				const handle = await startCuratorServer(
 					{
 						queries,
+						initialResultIndexCapacity: curatorResultIndexCapacity(queries.length),
 						sessionToken,
 						timeout: curatorTimeoutSeconds,
 						availableProviders,
@@ -3244,19 +3297,21 @@ export default function (pi: ExtensionAPI) {
 							}
 						},
 						async onAddSearch(query, provider) {
-							if (commandHandle && !isCommandActive()) {
-								throw new Error("Curator session is no longer active.");
-							}
-							const requestedProvider = resolveCuratorSearchProvider(provider, currentSearchProvider);
-							const response = await search(query, {
-								provider: requestedProvider,
-								signal: searchAbort.signal,
-								extensionContext: ctx,
+							return runWithProxy(undefined, async () => {
+								if (commandHandle && !isCommandActive()) {
+									throw new Error("Curator session is no longer active.");
+								}
+								const requestedProvider = resolveCuratorSearchProvider(provider, currentSearchProvider);
+								const response = await search(query, {
+									provider: requestedProvider,
+									signal: searchAbort.signal,
+									extensionContext: ctx,
+								});
+								if (commandHandle && !isCommandActive()) {
+									throw new Error("Curator session is no longer active.");
+								}
+								return toCuratorSearchEntries(response);
 							});
-							if (commandHandle && !isCommandActive()) {
-								throw new Error("Curator session is no longer active.");
-							}
-							return toCuratorSearchEntries(response);
 						},
 						onAddSearchResults(entries) {
 							if (commandHandle && !isCommandActive()) return;
@@ -3315,41 +3370,40 @@ export default function (pi: ExtensionAPI) {
 
 				if (queries.length > 0) {
 					(async () => {
-						let nextResultIndex = queries.length;
-						for (let qi = 0; qi < queries.length; qi++) {
-							if (aborted || !isCommandActive()) break;
+						await runSearchQueries(queries, async (query, qi) => {
+							if (aborted || !isCommandActive()) return;
 							const requestedProvider = currentSearchProvider;
 							try {
-								const response = await search(queries[qi], {
+								const response = await runWithProxy(undefined, () => search(query, {
 									provider: requestedProvider,
 									signal: searchAbort.signal,
 									extensionContext: ctx,
-								});
-								if (aborted || !isCommandActive()) break;
+								}));
+								if (aborted || !isCommandActive()) return;
 								const entries = toCuratorSearchEntries(response);
 								for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
 									const entry = entries[entryIndex];
-									const resultIndex = entryIndex === 0 ? qi : nextResultIndex++;
+									const resultIndex = curatorResultIndex(qi, entryIndex, queries.length);
 									const indexedEntry: IndexedCuratorSearchEntry = {
 										...entry,
 										queryIndex: resultIndex,
-										query: queries[qi],
+										query,
 									};
 									collected.set(resultIndex, indexedCuratorEntryToQueryResult(indexedEntry));
 									if (entry.error) {
-										handle.pushError(resultIndex, entry.error, entry.provider, { query: queries[qi], slotIndex: qi });
+										handle.pushError(resultIndex, entry.error, entry.provider, { query, slotIndex: qi });
 									} else {
-										handle.pushResult(resultIndex, { ...entry, query: queries[qi], slotIndex: qi });
+										handle.pushResult(resultIndex, { ...entry, query, slotIndex: qi });
 									}
 								}
 							} catch (err) {
-								if (aborted || !isCommandActive()) break;
+								if (aborted || !isCommandActive()) return;
 								const message = err instanceof Error ? err.message : String(err);
 								const failedProvider = toCuratorProvider(requestedProvider);
-								handle.pushError(qi, message, failedProvider, { query: queries[qi], slotIndex: qi });
-								collected.set(qi, { query: queries[qi], answer: "", results: [], error: message, provider: failedProvider });
+								handle.pushError(qi, message, failedProvider, { query, slotIndex: qi });
+								collected.set(qi, { query, answer: "", results: [], error: message, provider: failedProvider });
 							}
-						}
+						});
 						if (!aborted && isCommandActive()) handle.searchesDone();
 					})();
 				} else {

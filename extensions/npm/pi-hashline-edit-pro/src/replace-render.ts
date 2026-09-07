@@ -2,6 +2,7 @@ import { Markdown, Text } from "@earendil-works/pi-tui";
 import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
 import type { ReplaceDetails } from "./replace";
 import { withLineNumbers } from "./utils";
+import { isDedupRow } from "./replace-response";
 import { getPreviewInput } from "./payload-contract";
 export { getPreviewInput };
 
@@ -12,8 +13,7 @@ export type MdTheme = Pick<
 	"fg" | "bold" | "italic" | "underline" | "strikethrough"
 >;
 
-export type RPreview = { diff: string } | { error: string };
-
+export type RPreview = { diff: string; path?: string } | { error: string; path?: string };
 export type RRState = {
 	argsKey?: string;
 	preview?: RPreview;
@@ -25,9 +25,10 @@ export type RRState = {
 type DiffRowKind = "added" | "removed" | "context";
 
 function diffRowKind(line: string): DiffRowKind {
-	const stripped = line.replace(/^\s*\d+\s+│\s*/, "");
-	if (stripped.startsWith("+") && !stripped.startsWith("+++")) return "added";
-	if (stripped.startsWith("-") && !stripped.startsWith("---")) return "removed";
+	const withoutGutter = line.replace(/^\s*\d+\s+│\s*/, "");
+	if (isDedupRow(withoutGutter) || isDedupRow(withoutGutter.replace(/^\s*│\s*/, ""))) return "removed";
+	if (withoutGutter.startsWith("+") && !withoutGutter.startsWith("+++")) return "added";
+	if (withoutGutter.startsWith("-") && !withoutGutter.startsWith("---")) return "removed";
 	return "context";
 }
 
@@ -65,17 +66,21 @@ export function fmtResult(diff: string, theme: FgT): string {
 }
 
 export function fmtCall(
-	args: { path?: string } | undefined,
-	state: RRState,
-	expanded: boolean,
-	theme: CallT,
-	toolName = "replace",
+  args: { path?: string; remove_from?: string; remove_to?: string; anchor?: string } | undefined,
+  state: RRState,
+  expanded: boolean,
+  theme: CallT,
+  toolName = "replace",
 ): string {
-	const path = args?.path;
-	const pathDisplay =
-		typeof path === "string" && path.length > 0
-			? theme.fg("accent", path)
-			: theme.fg("toolOutput", "...");
+  const previewPath = state.preview && "path" in state.preview ? state.preview.path : undefined;
+  const path = args?.path ?? previewPath;
+  const anchorFallback = typeof args?.remove_from === "string" && typeof args?.remove_to === "string" ? `${args.remove_from}→${args.remove_to}` : typeof args?.anchor === "string" ? args.anchor : undefined;
+  const pathDisplay =
+    typeof path === "string" && path.length > 0
+      ? theme.fg("accent", path)
+      : typeof anchorFallback === "string" && anchorFallback.length > 0
+        ? theme.fg("accent", anchorFallback)
+        : theme.fg("toolOutput", "...");
 	let text = `${theme.fg("toolTitle", theme.bold(toolName))} ${pathDisplay}`;
 
 	if (!state.preview) {
@@ -234,7 +239,7 @@ export function reuseMarkdown(context: any, content: string, theme: any): Markdo
 
 export function makeRenderCall(
 	preview: (args: unknown, cwd: string, signal?: AbortSignal) => Promise<RPreview>,
-	options: { getInput?: (args: unknown) => { path?: string } | null; toolName?: string } = {},
+  options: { getInput?: (args: unknown) => { path?: string; remove_from?: string; remove_to?: string; anchor?: string } | null; toolName?: string } = {},
 ) {
 	const getInput = options.getInput ?? getPreviewInput;
 	const toolName = options.toolName ?? "replace";

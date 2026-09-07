@@ -2,6 +2,150 @@
 
 ## Unreleased
 
+## 0.6.6 - 2026-09-05
+
+### Fixed
+
+- Resolve POSIX process identity with `ps` from `PATH` when the system paths are unavailable, so managed-session locks work on NixOS-style installations. Keep system-path preference and reject malformed identity output. Thanks to @GodTamIt for the report and fix in #142 / #143.
+
+## 0.6.5 - 2026-09-04
+
+### Fixed
+
+- Corrected README and maintainer guidance for Pi settings isolation, project trust, supported version floors, and optional web-search registration.
+- Replaced invalid download-example refs and stale version wording. Runtime code and dependencies are unchanged from v0.6.4.
+
+## 0.6.4 - 2026-09-04
+
+### Added
+
+- Added direct-read lifecycle/source details and an explicit `details.browserWindow` headed-login handoff for direct or batched first/fresh local launches whose desktop visibility remains unverified; attachments and provider launches do not receive it.
+
+### Changed
+
+- Exa searches now request primary, version-aware, distinct sources; both search providers remove later exact normalized-URL duplicates, label provider page dates, and report duplicate counts without overfetching or claiming crawl/version proof.
+
+### Fixed
+
+- Made unknown-page timeout recovery visibly executable under the page-target guard, live-verified successful tab changes (including same-URL titles, deliberate blank tabs, and closes that reveal blank tabs), rejected upstream's false-success `scrollintoview text=...` form directly or in batches while preserving help, and kept dialog timeout recovery usable.
+- Made `outputPath` preserve full command-redacted compacted direct, per-batch-row, and whole-batch payloads from wrapper-verified live spills instead of writing compact metadata, fail without writing when any required payload is unavailable, and show direct-read CLI/browser/source lifecycle without requiring structured details.
+- Redacted SAML/OAuth URL credentials and snapshot spill files while retaining exact internal page targets and useful non-auth application state URLs.
+
+### Validation
+
+- Passed the unit/fake suite (792 tests, two opt-in skips), generated docs, build, TypeScript, live command-reference checks, configured-source lifecycle, and packaged-Pi smoke (127 packed files). Real-upstream contracts passed 2/2; the startup profile measured 60.6 ms median and 70.7 ms maximum.
+- Negative controls produced 21 behavioral assertion failures across 15 isolated mutations; removing the URL scanner's token-start anchor also exceeded a capped 12-second run. Restoring the committed implementation passed all 268 relevant tests, build, and TypeScript checks.
+- Ubuntu run `run-1788570862855-grads1` passed `platform-build` and `browser-dogfood-smoke` with 11/11 assertions each, complete artifact manifests, 3/3 cleanup assertions, and an empty final local-container inventory.
+- Isolated Pi/tmux smoke passed Example Domain QA, local headed handoff, a native batch, and a full Exa documentation read: `outputPath` held 104,076 bytes of valid JSON with 101,011 content characters rather than compact metadata. Browser and tmux sessions were closed.
+- The full release command passed every step before platform doctor, then stopped because localhost macOS SSH and Parallels `prlctl` are unavailable. The macOS-SSH and native-Windows suites were not run. This GitHub-only release uses an explicitly approved platform exception; npm is not published.
+
+## 0.6.3 - 2026-09-01
+
+### Added
+
+- Added validated `webSearch.defaultSearchType` config with per-call override precedence, plus bounded Exa domain/category filters, deep-mode query variants, and Dynamic Highlights support.
+
+### Changed
+
+- Made `deep-lite` the clear agent guidance for research before implementation while preserving `auto` for users who do not configure a default. Exa result details now always report the effective requested type, searches remain serialized, and Brave keeps its existing behavior while rejecting explicitly requested new Exa-only filters.
+
+### Validation
+
+- Passed `npm run verify -- pre-pr` (783 tests passed, two opt-in skips; 127 packed files), generated docs, live command-reference checks, package verification, the startup profile (81.3 ms median, 89.5 ms maximum), and platform harness checks (5/5).
+- Final regression tests applied to the v0.6.2 implementation failed in ten expected places, then passed on this release.
+- An isolated Pi/tmux live Exa smoke omitted `searchType` and used `includeDomains`, `additionalQueries`, and Dynamic Highlights. It returned two results with `details.searchType: deep-lite` in one tool call, and the API key did not appear in the transcript.
+- Ubuntu run `run-1788292325591-uypabf` passed `platform-build` and `browser-dogfood-smoke` with 11/11 assertions each, complete artifact manifests, 3/3 cleanup assertions, and an empty final lease inventory.
+- Full platform release composition remains blocked because localhost macOS SSH and Parallels `prlctl` are unavailable; macOS-SSH and native-Windows suites were not run and are not reported as passed. This release creates GitHub artifacts only; npm publishing is not authorized.
+
+## 0.6.2 - 2026-09-01
+
+### Added
+
+- Added thin passthrough support for upstream 0.36.0 experimental WebMCP page tools (`list`, `invoke`, detached `result` / `cancel`, params/frame/timeout options) and the bundled `webmcp-gen` skill. Page-tool calls recheck the active target and invalidate prior page-scoped refs because page code can mutate, rerender, or navigate.
+
+### Changed
+
+- Rebaselined the recommended upstream release to `agent-browser` 0.36.0 while keeping 0.35.0 as the stable runtime floor. `--no-webmcp` is an optional launch-scoped boolean for fresh managed Chrome sessions; crossed 0.35.2 dashboard `--allowed-origins` stays sessionless; Eve, dependency-resolution, and Lightpanda-only upstream changes need no wrapper layer.
+
+### Fixed
+
+- Kept pending detached WebMCP calls from pinning an immediate URL probe as the stable page target. Pending direct/batched results and failed `result` / `cancel` settlement attempts now leave the target and refs unverified; `result` / `cancel` remain usable, and `verify-page-target-after-pending-webmcp` replaces the otherwise-blocked snapshot follow-up with `get url` before a fresh `batch --bail` snapshot. Long WebMCP and read/wait timeouts in raw batch strings now extend the wrapper watchdog with upstream's raw-argument precedence.
+
+### Validation
+
+- Passed `npm run verify -- pre-pr` (779 tests passed, two opt-in skips; 127 packed files), configured-source lifecycle, packaged-Pi smoke, real-upstream contracts (2/2), deterministic browser dogfood (8/8), the startup profile (104.9 ms median, 114.5 ms maximum), and platform harness checks (5/5).
+- The Ubuntu platform matrix passed `platform-build` and `browser-dogfood-smoke` with 11/11 assertions each, complete artifact manifests, and successful lease cleanup.
+- An isolated Pi/tmux release smoke passed top-level `qa` on Example Domain and completed the Sauce Demo checkout flow through the overview page without placing the order. Low-to-high sorting, two cart items, the $17.98 subtotal / $1.44 tax / $19.42 total, an exact screenshot, a verified 45.4-second WebM recording, diagnostics, and session cleanup all passed. The only site errors were four Backtrace telemetry 401 responses; no console or page errors appeared.
+- Localhost macOS SSH and Parallels `prlctl` were unavailable, so the macOS-SSH and native-Windows suites were not run and are not reported as passed under the explicit release waivers. This release creates GitHub artifacts only; npm publishing is not authorized.
+
+## 0.6.1 - 2026-08-30
+
+### Fixed
+
+- Rejected unsupported global `--flag=value` arguments before normal command execution can misplan them as valid upstream flags or screenshot operands. `--restore=<key>` remains supported because `agent-browser` 0.35.x explicitly accepts that form; all other global values use separate argv tokens. Plain help/version inspection still preserves exact caller argv, matching upstream.
+- Preserved stdout chunk ordering while switching oversized subprocess output from memory to a spill file, preventing valid JSON envelopes from being reordered under fast chunk delivery.
+- Accepted both npm 11's array and npm 12's keyed-object `npm pack --json` result shapes in package verification.
+
+### Validation
+
+- Passed `npm run verify -- pre-pr` (776 tests passed, two opt-in skips; 127 packed files), configured-source lifecycle, packaged-Pi smoke on Pi 0.84.4, real-upstream contracts on 0.35.1 and the 0.35.0 floor (2/2 each), deterministic browser dogfood, startup profile (60.14 ms median), Ubuntu platform build/browser smoke, and an isolated interactive Pi checkout smoke covering rejected equals forms plus valid separated-token execution.
+- Two earlier 0.35.1 attempts were not treated as passes: the first lost its CDP connection as clamshell sleep began, and the retry was suspended by a 2,116-second maintenance sleep before its unchanged 180-second timeout fired after wake. Direct upstream and wrapper vitals checks passed on this release tree, the unchanged base, and v0.6.0; the uninterrupted caffeinated gate then passed cleanly.
+- Full platform release composition remains blocked because localhost macOS SSH is unavailable and Parallels `prlctl` is missing; macOS SSH and native-Windows suites were not run under the authorized GitHub-only exception. This release creates GitHub artifacts only; npm publishing is not authorized.
+
+## 0.6.0 - 2026-08-28
+
+### Changed
+
+- Extended wrapper-side `snapshot -i --search` with bounded rendered-DOM evidence so visible below-fold warnings and accessible labels omitted from the accessibility snapshot remain discoverable without including hidden content.
+- Marked page-change summaries as observed or dispatch-only, promoted unverified batch mutation evidence ahead of step output, and clarified that fixed waits and URL patterns already matching the starting page are not postconditions.
+- Warned after `keyboard inserttext` that it skips real key events and can change a DOM value without updating framework state; rich-input guidance now prefers `keyboard type` when editors require key events.
+- Removed wrapper authorization gates around upstream sessions, state/restore paths, config, file access, launch environment, local pages, output paths, close arguments, and `--allowed-domains` enforcement. Session/state lists and restore identifiers now remain visible, and the obsolete v2 managed-daemon lock bridge was deleted; page-target verification and automatic managed-restore lifecycle correctness remain.
+
+### Validation
+
+- Passed `npm run verify -- pre-pr` (773 tests passed, two opt-in skips; 127 packed files), configured-source lifecycle, packaged-Pi smoke, deterministic browser dogfood, the real-upstream contract suite, and an isolated interactive Pi checkout smoke.
+- Full platform release composition remains blocked because localhost SSH is unavailable and Parallels `prlctl` is missing; macOS SSH and native-Windows suites were not run. This release creates GitHub artifacts only; npm publishing is not authorized.
+
+## 0.5.3 - 2026-08-27
+
+### Changed
+
+- Prompted agents to prefer `agent_browser_web_search` for current or external web facts and URL discovery, including from the main `agent_browser` routing guidance, instead of treating search as a one-query CAPTCHA fallback. Runtime 429 serialization and the post-429 error still stop retry storms.
+
+### Validation
+
+- Passed `npm run verify -- pre-pr` (784 tests passed, two opt-in skips; 130 packed files), configured-source lifecycle, packaged-Pi smoke, command-reference verification, and the startup profile (72.4 ms median, below the 250 ms budget).
+- A fresh isolated Pi smoke with Exa configured chose `agent_browser_web_search` for an unprompted current-version lookup, cited the returned GitHub release URL, and did not expose the API key. The full release composition remains blocked at its platform doctor because localhost SSH is unavailable and `prlctl` is missing; macOS SSH and native-Windows suites were not run. This release creates GitHub artifacts only; npm publishing is not authorized.
+
+## 0.5.2 - 2026-08-26
+
+### Changed
+
+- Rebaselined the command/help reference on recommended upstream `agent-browser` 0.35.1. The release fixes snapshot-diff ref lifecycle, active-main-frame stream URL updates, and Windows ARM64 launcher selection without adding commands or flags.
+- Replaced the enumerated runtime allowlist with a stable minimum-version policy: 0.35.0 remains the support floor, 0.35.1 is recommended, and newer stable versions are admitted without version-specific compatibility shims.
+- Added a verification invariant preventing WorkOS/private-registry URLs from entering `package-lock.json`; current lockfile resolutions remain public.
+
+### Fixed
+
+- Registered one-shot `script` version preflight inside active shutdown tracking so a quit during a slower launcher probe aborts promptly instead of starting the sandbox after teardown and running until timeout.
+
+### Validation
+
+- Passed the default gate on recommended 0.35.1 (784 tests passed, two opt-in skips), configured-source lifecycle, packaged-Pi smoke, real-upstream contracts on 0.35.1 and the 0.35.0 floor (2/2 each), deterministic dogfood, startup profile, Ubuntu platform build/browser smoke, and interactive native-tool script plus ordinary browser smoke.
+- The full release composition remains blocked at its platform doctor because this host has macOS Remote Login disabled and no Parallels `prlctl`; the macOS SSH and native-Windows suites were not run.
+
+## 0.5.1 - 2026-08-25
+
+### Changed
+
+- Rebaselined the command/help inventory to `agent-browser` 0.35.0 while retaining verified runtime compatibility with 0.34.0. Browser-backed version checks and the package doctor now accept both versions; live command-reference verification continues to target the current 0.35.0 surface.
+- Added thin passthrough support and documentation for Linux Chromium private CA trust (`--ca-cert`, `--no-ca-cert`, `AGENT_BROWSER_CA_CERT`, `AGENT_BROWSER_CLEAR_CA_CERT`) and the bundled `protected-vercel-deployments` skill. CA-enabled managed sessions require a fresh launch, disable automatic managed restore, and cannot read certificate material from protected `.agent-browser` storage.
+
+### Validation
+
+- Passed the default gate against 0.35.0 (783 tests, two opt-in skips, build/typecheck/docs/live command reference), configured-source lifecycle, packaged-Pi smoke, deterministic dogfood, startup profile, Ubuntu platform build/browser smoke, interactive native-tool smoke, and the real-upstream contract against both 0.35.0 and 0.34.0 (2/2 each).
+- The full release composition remains blocked at its platform doctor because this host has macOS Remote Login disabled and no Parallels `prlctl`; the macOS SSH and native-Windows suites were not run.
+
 ## 0.5.0 - 2026-08-20
 
 ### Added

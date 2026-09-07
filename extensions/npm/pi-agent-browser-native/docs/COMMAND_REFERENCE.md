@@ -18,15 +18,47 @@ This project intentionally blocks normal `agent-browser` bash usage in most agen
 
 <!-- agent-browser-capability-baseline:start upstream-baseline -->
 <!-- Generated from scripts/agent-browser-capability-baseline.mjs. Run `npm run docs -- command-reference write` to update. Do not edit manually. -->
-This reference is baselined to the locally installed `agent-browser 0.34.0` command/help surface, audited against vercel-labs/agent-browser@548b159b30eef119ccf6846c8bc807d0eaa3f6f8. Upstream `agent-browser` remains the source of truth for command semantics; this file is the local fallback for Pi agent sessions where direct binary help is blocked or discouraged.
+This reference is baselined to the locally installed `agent-browser 0.36.0` command/help surface, audited against vercel-labs/agent-browser@eb05921bad874cd2a1b4fa5d1149f1ed26576cae. Upstream `agent-browser` remains the source of truth for command semantics; this file is the local fallback for Pi agent sessions where direct binary help is blocked or discouraged.
 
 The lightweight drift check is `npm run verify -- command-reference`. Run it whenever the installed upstream `agent-browser` version changes or this reference is edited.
 
 <!-- agent-browser-capability-baseline:end upstream-baseline -->
 
+### Upstream 0.36.0 rebaseline
+
+The recommended 0.36.0 release adds experimental page-provided WebMCP tools while preserving the stable 0.35.0 runtime floor.
+
+- `webmcp list` discovers tools registered by the current page. `webmcp invoke <tool>` accepts JSON or file input, frame selection, detached execution, and a timeout; `webmcp result <id>` waits for a detached call and `webmcp cancel <id>` cancels one.
+- Locally managed Chrome enables WebMCP by default. `--no-webmcp`, `AGENT_BROWSER_NO_WEBMCP`, and upstream config `noWebmcp` disable it; attached browsers, remote providers, Lightpanda, Safari/iOS, and older Chrome builds may return `webmcp_unsupported` instead. The wrapper treats `--no-webmcp` as launch-scoped.
+- `webmcp list` is read-only. Because `invoke`, `result`, and `cancel` can run page code that mutates, rerenders, or navigates, the wrapper rechecks the live page and invalidates prior page-scoped refs. A detached call that remains pending keeps the page target unverified, as does a failed `result` / `cancel` attempt while that target is unknown; settle or cancel it successfully, or use the `verify-page-target-after-pending-webmcp` (`get url`) next action / explicit navigation before taking a fresh snapshot. In `batch --bail`, put `get url` between a completed WebMCP mutation and `snapshot -i`.
+- `skills get webmcp-gen` loads the bundled workflow for creating `webmcp.init.js` and validating it against the existing UI. External MCP clients can opt into page tools with `mcp --tools core,webmcp`; the native Pi wrapper continues to use direct `args` rather than starting an MCP server.
+- Upstream also updates its separate Eve integration, dependency resolutions, and Lightpanda launch arguments. This wrapper adds no Eve layer or compatibility shim.
+
+### Upstream 0.35.2 rebaseline
+
+Upstream 0.35.2 hardens the standalone dashboard against DNS rebinding and cross-origin access. `dashboard start --allowed-origins <origins>` accepts comma-separated exact HTTPS reverse-proxy origins, with `AGENT_BROWSER_DASHBOARD_ALLOWED_ORIGINS` as the environment equivalent; the wrapper keeps this local lifecycle command sessionless. The release also fixes root remote CDP WebSocket URLs that contain query strings without requiring a wrapper shim.
+
+### Upstream 0.35.1 rebaseline
+
+The 0.35.1 baseline is a bug-fix release with no new commands or flags. Browser-backed calls accept stable `agent-browser` versions at or above the 0.35.0 floor.
+
+- Snapshot diffs reset element-ref numbering for each diff, invalidate refs across URL navigation, and preserve previous refs when a diff fails.
+- Stream URL events now follow the active main frame across full-document, History API, fragment, and active-tab changes while ignoring child frames and background tabs.
+- The Windows ARM64 launcher prefers a native executable and falls back to the published x64 binary through Windows emulation.
+- `rustls-webpki` and `quinn-proto` received upstream dependency updates.
+
+### Upstream 0.35.0 rebaseline
+
+The 0.35.0 release is the current runtime floor and adds private proxy CA trust plus one bundled workflow skill.
+
+- `--ca-cert <path>` / `AGENT_BROWSER_CA_CERT` loads a PEM bundle or DER certificate into an isolated NSS trust store for locally launched Linux Chromium. Normal hostname, validity, and unrelated-authority checks remain enabled. Equivalent certificate content reuses Chromium; changed content relaunches it. `--no-ca-cert` / `AGENT_BROWSER_CLEAR_CA_CERT` clears retained trust.
+- Use CA trust only with a fresh managed session. The wrapper treats `--ca-cert` and `--no-ca-cert` as launch-scoped for managed-session planning, disables automatic managed restore when CA trust is enabled, and passes caller-selected certificate paths through unchanged. Upstream rejects CA trust with profiles, CDP/auto-connect, providers, Lightpanda, `--ignore-https-errors`, macOS, or Windows, and requires `certutil` (`install --with-deps` installs it on supported Linux systems).
+- `skills get protected-vercel-deployments --full` loads the bundled short-lived Trusted Sources OIDC workflow. It uses `vc project token` and the `x-vercel-trusted-oidc-idp-token` header, avoids persisting tokens, and hands dashboard-only access-control changes to an authorized human.
+- The release also restores ARM64 build artifacts; no wrapper shim is needed.
+
 ### Upstream 0.34.0 rebaseline
 
-The 0.34.0 release adds persistent session-to-tab binding for shared Chrome sessions. This package targets exactly `agent-browser 0.34.0`: before browser-backed work, the extension caches one `agent-browser --version` check per cwd/PATH and fails a mismatch with expected/observed version details. Plain help/version, close recovery, and sessionless local setup/diagnostics remain available.
+The 0.34.0 release added persistent session-to-tab binding for shared Chrome sessions. It is below the current 0.35.0 runtime floor: before browser-backed work, the extension caches one `agent-browser --version` check per cwd/PATH and fails below-floor or malformed versions with expected/observed version details. Plain help/version, close recovery, and sessionless local setup/diagnostics remain available.
 
 - Named sessions on `--cdp` or `--auto-connect` remember their CDP target across commands and daemon restarts. CDP target ids from `tab list --json` are accepted as tab refs and stay stable across daemon restarts, unlike `t<N>` ids.
 - `--pin-tab` (`AGENT_BROWSER_PIN_TAB`) is sticky per session and is not launch-scoped: pass it once, including on an already-live session, so a closed bound tab fails with `tab_gone` instead of adopting a neighbor. JSON includes `code=tab_gone`, `data.targetId`, and optional sanitized `data.lastUrl`; batch exposes the same recovery object under `result`. Recover with `tab new` or `tab list`. `--no-pin-tab` turns the pin off again. Optional booleans use separated tokens (`--pin-tab false`).
@@ -39,7 +71,7 @@ The 0.33.1–0.33.2 releases harden daemon lifecycle and live streaming without 
 
 - 0.33.1 ships a default daemon idle timeout of 1 hour (`AGENT_BROWSER_IDLE_TIMEOUT_MS`, default `3600000`; `0` disables). Sessions without a restore key discard transient cookies/tabs on idle shutdown. Headed, Safari/iOS WebDriver, and user-attached browsers are exempt from that default. Tab recovery also revives Memory Saver-discarded tabs on connect/switch/close and reports recovery fields such as `revived` / `dialogBlocked` / `activeTabRevived`.
 - 0.33.2 makes stream frame delivery latest-wins, prioritizes input over frame writes, adds per-client `maxFps` / ack pacing, and adds `AGENT_BROWSER_STREAM_QUALITY`, `AGENT_BROWSER_STREAM_MAX_WIDTH`, and `AGENT_BROWSER_STREAM_MAX_HEIGHT` for screencast bandwidth control.
-- This wrapper keeps its managed-session idle override (default 15 minutes via `PI_AGENT_BROWSER_IMPLICIT_SESSION_IDLE_TIMEOUT_MS` / `AGENT_BROWSER_IDLE_TIMEOUT_MS`) and enables Pi-transcript- and Git-checkout-generation-scoped `AGENT_BROWSER_RESTORE` for wrapper-owned managed sessions so cookies/localStorage/sessionStorage survive browser relaunches, reload, and `/resume` of that transcript. Upstream 0.33.2 selects the newest file for a restore key regardless of browser-session suffix, so concurrent Pi transcripts receive distinct pools to prevent state clobbering or bleed. Caller-owned `--session` names do not get that inject, and foreign `piab-*` names are rejected unless this extension instance owns the exact namespace/session. Managed daemon inspection uses its own bounded timeout rather than a caller's short `PI_AGENT_BROWSER_PROCESS_TIMEOUT_MS`. Local browser navigation into `.agent-browser` state storage is blocked, including encoded `file:` paths, local-directory file ref interactions, batches, and later capture from a tracked protected target. Set `PI_AGENT_BROWSER_MANAGED_SESSION_RESTORE=0` to disable restore injection. No Eve-specific Pi runtime is added.
+- This wrapper keeps its managed-session idle override and enables transcript- and checkout-scoped `AGENT_BROWSER_RESTORE` for wrapper-owned implicit sessions so browser state can survive relaunch, reload, and `/resume`; set `PI_AGENT_BROWSER_MANAGED_SESSION_RESTORE=0` to disable it. Explicit sessions, restore/state paths, config, file access, launch arguments, environment, local pages, and close arguments pass through unchanged. Session/state lists keep every upstream row and restore identifier visible. Managed daemon inspection only coordinates the wrapper's automatic restore lifecycle.
 
 ### Upstream 0.33.0 rebaseline
 
@@ -66,7 +98,7 @@ The current audit also closes a command-reference/presentation gap for upstream 
 The 0.32.0 rebaseline hardens domain containment and fixes completed-page waits without adding a new native Pi input mode:
 
 - `--allowed-domains <list>` now contains request traffic across pages, iframes, workers, service workers, shared workers, and popups. Chromium `RTCPeerConnection` is disabled while containment is active to prevent WebRTC bypasses.
-- The wrapper treats argv-supplied `--allowed-domains` as launch-scoped. Use `sessionMode: "fresh"` for a fresh local Chrome context; upstream rejects CDP/auto-connect, profiles, restore/state replay, direct-page providers, iOS/Safari, and startup/profile Chrome args because those launch paths cannot guarantee containment. The wrapper's final observed-URL check remains defense in depth.
+- The wrapper treats argv-supplied `--allowed-domains` as launch-scoped. Use `sessionMode: "fresh"` for a fresh local Chrome context; upstream owns containment and incompatible-mode rejection, and the wrapper passes its result through unchanged.
 - `wait --load load` and `wait --load domcontentloaded` now resolve immediately when the current document already reached the requested state instead of waiting for a future lifecycle event. The wrapper still treats `waited:timeout` as inconclusive rather than success.
 - Upstream also publishes `@agent-browser/eve`, a separate Eve extension with namespaced browser tools and sandbox helpers. It is not bundled by this Pi extension and does not change the native `agent_browser` schema.
 
@@ -74,7 +106,7 @@ The 0.32.0 rebaseline hardens domain containment and fixes completed-page waits 
 
 The 0.31.2 rebaseline adds a WebGPU launch preset and periodic restore-state autosaves:
 
-- `--webgpu` (also `AGENT_BROWSER_WEBGPU`; standalone upstream additionally accepts `"webgpu": true` in `agent-browser.json`) enables the upstream platform preset. Browser-backed native calls pin a protected empty upstream config, so passive project/user config files are ignored; explicit `--config` / `AGENT_BROWSER_CONFIG` overrides remain rejected. Use the flag or environment form through this tool. It uses Metal on macOS, D3D on Windows, and SwiftShader software Vulkan on Linux. The native Pi wrapper passes it through as a launch-scoped optional boolean, so use `sessionMode: "fresh"` after an implicit session exists; `--webgpu false` explicitly disables a config/environment default.
+- `--webgpu` (also `AGENT_BROWSER_WEBGPU`; upstream config accepts `"webgpu": true`) enables the upstream platform preset. Native calls preserve project/user config plus explicit `--config` and `AGENT_BROWSER_CONFIG`. It uses Metal on macOS, D3D on Windows, and SwiftShader software Vulkan on Linux. The Pi wrapper treats it as launch-scoped, so use `sessionMode: "fresh"` after an implicit session exists; `--webgpu false` explicitly disables a config/environment default.
 - WebGPU requires a local browser launch. Upstream rejects enabled WebGPU with `--cdp`, `--auto-connect`, or `-p` / `--provider`. Use `doctor --webgpu` to pixel-check rendering and screenshot capture; use `doctor --webgpu --headed` when validating the headed capture path.
 - Headless WebGPU screenshots work on macOS. Upstream documents black headless WebGPU canvas captures on Windows and Linux even when in-page rendering succeeds; Windows needs a logged-in headed desktop, while Linux can use `--headed` with automatic Xvfb unless `AGENT_BROWSER_NO_XVFB=1`. Linux software rendering also needs `libvulkan1` and `mesa-vulkan-drivers`.
 - Restore-enabled sessions now save periodically while the browser remains open, including idle page-driven cookie/storage changes. `AGENT_BROWSER_AUTOSAVE_INTERVAL_MS` defaults to `30000`; `0` disables periodic saves but keeps native close saves. The existing `--restore-save` policy still controls whether automatic saves are allowed. For wrapper-owned headed launches, this extension defaults the interval to `0` because upstream 0.33.2 collects multi-origin storage through visible temporary tabs; upstream exempts headed browsers from idle shutdown, so direct window close can lose newer state unless an explicit interval was set before launch. The wrapper retains the effective launch-time interval across resume and rejects changes in either direction on a running wrapper-owned headed daemon until close plus a fresh launch.
@@ -170,11 +202,11 @@ Tool parameters (use exactly one of `script`, `args`, `semanticAction`, `job`, `
 - `networkSourceLookup`: **EXPERIMENTAL — candidates only** for failed request-to-source hints; compiles to generated `batch`, reports `details.compiledNetworkSourceLookup` and `details.networkSourceLookup`, and never assigns blame or edits files.
 - `electron`: optional Electron desktop-app shorthand. `list`, `status`, `cleanup`, and `probe` are wrapper-owned host/session helpers; `launch` starts a wrapper-owned isolated Electron profile and attaches through upstream `connect`.
 - `stdin`: top-level stdin is only for `batch`, `eval --stdin`, and `auth save --password-stdin`; other combinations are rejected before `agent-browser` is launched. `script` puts inner stdin on `browser({ stdin })`; `job`, `qa`, `sourceLookup`, `networkSourceLookup`, and `electron` generate or manage their own input.
-- `outputPath`: optional wrapper-owned local file sink for successful results. Use it for durable `eval`, `get`, `snapshot`, or diagnostic outputs, not as the destination for screenshots, downloads, recordings, or other browser artifacts; if the paths resolve to the same file, the browser artifact is preserved and the result-data write fails validation. `details.outputFile` reports the saved path and byte count. If caller argv includes upstream `--json`, the visible JSON content stays parseable and the save notice is only in `details.outputFile`.
+- `outputPath`: optional wrapper-owned local file sink for successful results. Use it for durable `eval`, `get`, `snapshot`, or diagnostic outputs, not as the destination for screenshots, downloads, recordings, or other browser artifacts; if the paths resolve to the same file, the browser artifact is preserved and the result-data write fails validation. If presentation compacted a large direct result, a result row, or the whole `batch`, the writer copies each full command-redacted pre-compaction value only from its matching live wrapper-manifest spill; if any required spill is unavailable or untrusted, it fails without writing compact metadata. `details.outputFile` reports the saved path and byte count. If caller argv includes upstream `--json`, the visible JSON content stays parseable and the save notice is only in `details.outputFile`.
 - `timeoutMs`: optional per-call wrapper subprocess watchdog override in milliseconds for the requested browser CLI process. Managed-session policy inspection can independently consume up to 35 seconds before that process; this preflight is intentionally not shortened by `timeoutMs` because a busy but valid daemon must remain distinguishable from an unverifiable one.
 - `sessionMode`:
   - `"auto"` reuses the extension-managed session when possible.
-  - `"fresh"` rotates that managed session to a fresh upstream launch so launch-scoped flags (`--allowed-domains`, `--auto-connect`, `--args`, `--cdp`, `--enable`, `--executable-path`, `--webgpu`, `--init-script`, `--idle-timeout`, `--user-agent`, `--headed`, `--device`, `--namespace`, `--profile`, `--provider`, `-p`, `--restore`, `--restore-save`, `--restore-check-url`, `--restore-check-text`, `--restore-check-fn`, `--session-name`, `--state`) apply.
+  - `"fresh"` rotates that managed session to a fresh upstream launch so launch-scoped flags (`--allowed-domains`, `--auto-connect`, `--args`, `--ca-cert`, `--no-ca-cert`, `--cdp`, `--enable`, `--executable-path`, `--webgpu`, `--init-script`, `--idle-timeout`, `--user-agent`, `--headed`, `--device`, `--namespace`, `--profile`, `--provider`, `-p`, `--restore`, `--restore-save`, `--restore-check-url`, `--restore-check-text`, `--restore-check-fn`, `--session-name`, `--state`) apply.
   - If a fresh launch fails or times out, read `details.managedSessionOutcome` for `preserved` vs `abandoned` (and related fields). A model-visible `Managed session outcome: …` line is appended for failing calls that used `sessionMode: "fresh"` and when automatic close of a replaced session fails; `"auto"` failures can still populate the struct without that extra line. If you explicitly close the current wrapper-managed session with `--session <name> close`, later default auto calls rotate to a new wrapper-generated session instead of reusing the closed name; repeated closes and branch restores keep those generated names monotonic.
 
 ### One-shot code mode
@@ -232,11 +264,11 @@ For a WebGPU page, enable the launch preset before the first navigation. Treat i
 
 Run `{ "args": ["doctor", "--webgpu"] }` before trusting a black or blank WebGPU capture. On Linux/Windows capture paths, use `doctor --webgpu --headed` and follow upstream's platform requirements; do not combine enabled WebGPU with `--cdp`, `--auto-connect`, or provider launches.
 
-Treat headed success as browser-context success, not proof that a window is visible on the user's display. Remote shells, containers, virtual framebuffers, or upstream/provider-owned browser hosts can still put the visible window somewhere the user cannot see. If a user reports no window, gather evidence with `screenshot`, `tab list`, `get url`, or `snapshot -i`; then relaunch with the right display/profile/provider setup rather than assuming the user missed it.
+On a successful first/fresh local wrapper-managed headed launch, including a launch inside `batch`, whose upstream lifecycle proves a browser launched, `details.browserWindow` reports `{ mode: "headed", ownership: "wrapper-managed", sessionName, visibility: "unverified" }` and the result adds one visible login handoff. CDP, auto-connect, provider, and Electron attachments suppress this local-window claim. Treat it as headed-launch evidence, not proof that a window is visible on the user's display. Remote shells, containers, virtual framebuffers, or upstream/provider-owned browser hosts can still put the window somewhere the user cannot see. If visible, let the user complete the login and continue the same wrapper session with `sessionMode: "auto"`; otherwise gather evidence with `screenshot`, `tab list`, `get url`, or `snapshot -i`, then fix display/profile/provider setup.
 
-For local fixtures, remember that `localhost` and `127.0.0.1` are resolved from the browser host, which may differ from the shell that started a temporary HTTP server. `net::ERR_EMPTY_RESPONSE` on `http://localhost:<port>` usually means the browser could not reach that server, not that the page rendered blank; the wrapper appends a local fixture hint for common loopback failures. Prefer an environment-specific host-reachable HTTP(S) address. Do not switch to `file://`: the native wrapper blocks content-returning local-URL calls plus follow-up inspection, scripting, interaction, and Electron probes on local file pages to protect authenticated `.agent-browser` state. Protected artifact destinations and top-level `outputPath` also fail before browser spawn or directory creation.
+For local fixtures, remember that `localhost` and `127.0.0.1` are resolved from the browser host, which may differ from the shell that started a temporary HTTP server. `net::ERR_EMPTY_RESPONSE` on `http://localhost:<port>` usually means the browser could not reach that server, not that the page rendered blank. Use a host-reachable HTTP(S) address or a `file://` fixture when upstream browser settings allow it. Local paths, artifact destinations, and top-level `outputPath` are caller-owned and pass through normally.
 
-For a caller-owned explicit `--session`, content-bearing reads and interactions first run a session-scoped `get url`; missing or stale transcript page state is not trusted. If the probe fails or resolves to a protected local target, the requested content command does not run. Calls to the same effective canonical namespace/session are serialized inside one extension instance; explicit namespace argv overrides inherited `AGENT_BROWSER_NAMESPACE`, including an explicit empty default across preparation helpers, that live probe, any semantic-action snapshot, and the requested command; different caller-owned sessions can still overlap. This does not coordinate direct `agent-browser` calls or another Pi process. Windows drive-relative forms such as `C:.agent-browser\\state\\...` are paths, not URL schemes. Nested `batch` steps are rejected. Raw batch command strings mirror upstream's ASCII-space tokenizer, including its single/double-quote and backslash handling; other Unicode whitespace remains part of a token. When later batch content depends on navigation, use exact `batch --bail` or split the calls: a non-bail batch is rejected if any failed transition could leave a local or unverified page active. Non-bail diagnostics remain available when every retained target is already verified safe.
+For an explicit `--session`, content-bearing reads and interactions first run a session-scoped `get url`; missing or stale transcript page state is not trusted, and a failed probe stops the requested content command. Calls to the same canonical namespace/session are serialized through that probe and command. Nested `batch` steps remain unsupported; raw batch command strings mirror upstream's ASCII-space tokenizer, including quoting and backslash handling.
 
 Temporary HTTP servers and their port/process lifecycle stay outside the native tool. Extension maintainers running real-upstream contract tests can reuse `startAgentBrowserContractFixtureServer()` in [`test/helpers/agent-browser-harness.ts`](https://github.com/fitchmultz/pi-agent-browser-native/blob/main/test/helpers/agent-browser-harness.ts) instead of ad-hoc `python3 -m http.server` processes.
 
@@ -297,9 +329,9 @@ Examples:
 
 The optional native `semanticAction` object is only a thin schema for common locator-based actions, direct selector/ref click/check/fill, and native dropdown selection; it compiles click/check/fill locator actions to existing upstream `find` commands, direct selector/ref actions to `click` / `check` / `fill`, and direct `action: "select"` to upstream `select <selector> <value...>`. Active-session role/name (`combobox` or `listbox`) and label select locators are resolved through one fresh snapshot to exactly one current visible ref before direct `select` execution; `details.compiledSemanticAction.args` reports that resolved `select @ref` argv (see [`TOOL_CONTRACT.md`](TOOL_CONTRACT.md#semanticaction) for the full field rules). For `locator: "role"`, pass either `value: "button"` or `role: "button"`; if both are present they must match. It is a top-level alternative to `script`, `args`, `job`, `qa`, `sourceLookup`, `networkSourceLookup`, and `electron`, not a nested shape inside `batch` stdin arrays. Add `session` inside `semanticAction` when the shorthand should target a named upstream browser session; the compiled argv prepends `--session <name>` before `find`, direct selector/ref commands, or `select`, and fallback candidate actions preserve that prefix. For active sessions, role/name click/check/fill shorthands may resolve through the current `snapshot -i` refs before execution so hidden duplicate matches do not steal the action; fill only resolves when there is one exact editable current ref match. Inspect `details.effectiveArgs` when you need the exact executed argv. `semanticAction` does not expose `uncheck` because upstream `find` actions are only `click, fill, check, hover, text`; use raw `uncheck <selector-or-ref>` after choosing a stable selector or current snapshot ref. If a raw `find` or semantic action misses with `selector-not-found`, the wrapper may take one fresh snapshot and append `Current snapshot ref fallback` when that snapshot has exact visible role/name matches for the failed target. Non-fill matches can include direct `try-current-visible-ref*` next actions. Semantic click misses may also include `Agent-browser candidate fallbacks`; `details.nextActions` first recommends a fresh `snapshot -i` and may include bounded role/name retries such as `button`/`link` for a missed `text` click, each as a `try-*-candidate` entry carrying redacted `find role …` argv.
 
-For desktop, contenteditable, or host-controlled rich inputs, treat a semantic `fill` miss or mismatch differently. Active-session role/name fills can execute through one exact current editable `combobox`, `searchbox`, or `textbox` ref before upstream `find` runs. If a later selector miss still finds an exact current editable ref (`searchbox` or `textbox`), `details.richInputRecovery` and visible `Rich input recovery` describe the candidate and append `focus-current-editable-ref*` / `click-current-editable-ref*` next actions. Those actions deliberately do **not** copy the fill text and never press `Enter` or submit. Direct `fill @ref <text>` on contenteditable refs may also append/prepend instead of replacing; when the latest snapshot proves the target is contenteditable, the wrapper verifies `get text` after a successful fill and appends `details.fillVerification` plus `inspect-after-fill-verification` / `verify-filled-value` if the visible text does not match. Use the safe ladder instead: refresh refs, choose the current editable `@ref`, focus or click it, then send the intended text with `keyboard inserttext` or `keyboard type` in a separate call. Do not auto-submit unless the user flow explicitly calls for it.
+For desktop, contenteditable, or host-controlled rich inputs, treat a semantic `fill` miss or mismatch differently. Active-session role/name fills can execute through one exact current editable `combobox`, `searchbox`, or `textbox` ref before upstream `find` runs. If a later selector miss still finds an exact current editable ref (`searchbox` or `textbox`), `details.richInputRecovery` and visible `Rich input recovery` describe the candidate and append `focus-current-editable-ref*` / `click-current-editable-ref*` next actions. Those actions deliberately do **not** copy the fill text and never press `Enter` or submit. Direct `fill @ref <text>` on contenteditable refs may also append/prepend instead of replacing; when the latest snapshot proves the target is contenteditable, the wrapper verifies `get text` after a successful fill and appends `details.fillVerification` plus `inspect-after-fill-verification` / `verify-filled-value` if the visible text does not match. Use the safe ladder instead: refresh refs, choose the current editable `@ref`, focus or click it, then use `keyboard type` for framework-controlled editors that require real key events. `keyboard inserttext` is paste-like: it can change a DOM value without updating application state, so use it only when later application-state evidence proves the edit was accepted. Do not auto-submit unless the user flow explicitly calls for it.
 
-Do not assume Playwright selector dialects such as `text=Close` or `button:has-text('Close')` are supported wrapper syntax. If you need those forms, verify current upstream `agent-browser` behavior first; otherwise use refs, `find`, or known CSS selectors.
+Do not assume Playwright selector dialects such as `text=Close` or `button:has-text('Close')` are supported wrapper syntax. In particular, current upstream can report successful `scrollintoview text=...` without moving the page, so the wrapper rejects that form before dispatch—directly or in an effective raw/stdin batch row—and shows executable `find text <label> hover` plus snapshot/ref recovery payloads in visible failure text and `details.nextActions`. `scrollintoview ... --help` and `-h` remain native help calls. Use `scrollintoview` with CSS, `xpath=...`, or a current `@e…` ref; use `find` for semantic text targets.
 
 Treat `@e…` refs as page-scoped. After a successful `snapshot`, the wrapper records the latest refs and page target for that session; getter or mutation ref commands such as `get text @e4`, `click @e4`, `select @e5 chocolate`, or batch steps with old refs fail with `failureCategory: "stale-ref"` when the page target changed or the ref is absent from the latest same-page snapshot. If a session `snapshot -i` fails with `No active page`, the wrapper invalidates prior refs for that session; later mutation-prone `@e…` calls fail before upstream until a successful fresh `snapshot -i` records refs again. Inside `batch` stdin JSON, the wrapper also walks steps in order before spawn: steps whose first token can navigate or mutate set a latch; a later step whose first token is `snapshot` clears that latch for following rows; guarded steps that still mention `@e…` after an uncleared latch fail with the same `stale-ref` bucket without launching upstream. Same-snapshot form fills and native form-control steps are allowed before a click or submit step, so `fill`, `check`/`uncheck` checkbox or radio refs, checkbox/radio `click`/`tap` refs, `select` combobox refs, then a final submit `click` can run from one snapshot. Split dynamic or autosubmit forms with a fresh snapshot if a control interaction rerenders the targets. Follow the `refresh-interactive-refs` next action (it includes `--session <name>` when needed) and prefer stable `find` or `semanticAction` locators when navigation or rerendering is likely. Contract detail: [`TOOL_CONTRACT.md`](TOOL_CONTRACT.md#details) (`refSnapshot`, `refSnapshotInvalidation`).
 
@@ -318,7 +350,7 @@ Successful `snapshot -i` results can also surface `Possible overlay blockers` wh
 { "args": ["eval", "--stdin"], "stdin": "document.title" }
 ```
 
-Use `read [url]` for documentation and other unstructured text. `read <url> --raw` preserves the response body, `read <url> --require-md` requires `text/markdown`, `read <url> --llms <index|full>` reads the nearest ancestor llms index/full file, `read <url> --outline` emits headings, `read <url> --filter <text>` narrows matching sections/headings/links, and `read <url> --timeout <ms>` changes the request timeout. Explicit URL reads prefer markdown, try a `.md` path and nearby `llms.txt` links, then fall back to readable HTML without launching Chrome. Omit the URL to read rendered active-tab DOM, including current browser auth and client-side state; `--llms` / `--require-md` without a URL instead fetch from the active tab URL. The wrapper renders `data.content` first, retains source/content-type/status/final-URL metadata in `details.data`, keeps fetched URLs from replacing the active browser tab target, and extends its subprocess watchdog for explicit long read timeouts.
+Use `read [url]` for documentation and other unstructured text. `read <url> --raw` preserves the response body, `read <url> --require-md` requires `text/markdown`, `read <url> --llms <index|full>` reads the nearest ancestor llms index/full file, `read <url> --outline` emits headings, `read <url> --filter <text>` narrows matching sections/headings/links, and `read <url> --timeout <ms>` changes the request timeout. Explicit URL reads prefer markdown, try a `.md` path and nearby `llms.txt` links, then fall back to readable HTML without requiring a Chrome page. The wrapper still starts the CLI under its managed identity. A visible `Read execution` line reports the fetch source, CLI start, managed browser lifecycle, and managed-session outcome; the same facts remain in `details.readSource`, `details.lifecycle.effectiveLaunch.browserLaunched`, `details.agentBrowserStarted`, and `details.managedSessionOutcome`. The lifecycle boolean can be `false` before any browser launch or `true` when reusing an active browser. Omit the URL to read rendered active-tab DOM, including current browser auth and client-side state; `--llms` / `--require-md` without a URL instead fetch from the active tab URL. The wrapper renders `data.content` first, retains source/content-type/status/final-URL metadata in `details.data`, keeps fetched URLs from replacing the active browser tab target, and extends its subprocess watchdog for explicit long read timeouts.
 
 When you already know several visible refs or selectors, extract them in one `batch` call instead of many serial getter calls:
 
@@ -328,7 +360,7 @@ When you already know several visible refs or selectors, extract them in one `ba
 
 Prefer `get` and scoped `eval --stdin` for read-only extraction. Getter names are grouped under `get`: use `get title`, `get url`, or `get text <selector>`, not shortcut commands such as `title` or `url`. When upstream reports an unknown command, unknown subcommand, or unrecognized command for a single-token shortcut (`attr`, `count`, `html`, `text`, `title`, `url`, or `value`), the wrapper adds a visible grouped-`get` hint; only `title` and `url` also get exact read-only `details.nextActions` (`use-get-title` / `use-get-url`, with `--session` preserved when the failed call named a session). If another `Agent-browser hint:` (selector dialect or stale-ref recovery) was already appended to the same error text, the getter hint is omitted.
 
-Return the intended JavaScript value from `eval --stdin` instead of relying on `console.log`. In the native pi tool, the JavaScript belongs in the top-level `stdin` field; do **not** write it as a third `args` item such as `{ "args": ["eval", "--stdin", "document.title"] }`. The wrapper tolerates that common misplaced form by moving the trailing token to stdin before spawn, but the explicit `stdin` field is the documented form and avoids ambiguity for multiline snippets. For object-shaped extraction, pass a plain expression such as `({ title: document.title, url: location.href })`; if the result should be kept outside the transcript as a durable file, add top-level `outputPath` (for example `{ "args": ["eval", "--stdin"], "stdin": "({ title: document.title })", "outputPath": "logs/page-title.json" }`). If you send a function-shaped snippet, invoke it explicitly, for example `(() => ({ title: document.title }))()`. When upstream serializes a function result to `{}`, the wrapper can append `Eval stdin hint` and `details.evalStdinHint`. Snippets run in the page's per-tab global scope, so top-level `const`/`let`/`function` declarations persist across calls and later snippets can fail with `SyntaxError: Identifier ... has already been declared`; wrap multi-statement extraction in an IIFE instead of redeclaring names. After a failed `eval`, `back`/`forward`/`reload`, `connect`, `state load`, or `tab` selection, the wrapper probes the live page URL itself and keeps an observed http(s) page verified, so follow-up reads do not need a manual `get url` unless the result says the page became unverified; because the failed command may still have changed the document, prior page-scoped refs are invalidated and need a fresh `snapshot -i` before reuse.
+Return the intended JavaScript value from `eval --stdin` instead of relying on `console.log`. In the native pi tool, the JavaScript belongs in the top-level `stdin` field; do **not** write it as a third `args` item such as `{ "args": ["eval", "--stdin", "document.title"] }`. The wrapper tolerates that common misplaced form by moving the trailing token to stdin before spawn, but the explicit `stdin` field is the documented form and avoids ambiguity for multiline snippets. For object-shaped extraction, pass a plain expression such as `({ title: document.title, url: location.href })`; if the result should be kept outside the transcript as a durable file, add top-level `outputPath` (for example `{ "args": ["eval", "--stdin"], "stdin": "({ title: document.title })", "outputPath": "logs/page-title.json" }`). If you send a function-shaped snippet, invoke it explicitly, for example `(() => ({ title: document.title }))()`. When upstream serializes a function result to `{}`, the wrapper can append `Eval stdin hint` and `details.evalStdinHint`. Snippets run in the page's per-tab global scope, so top-level `const`/`let`/`function` declarations persist across calls and later snippets can fail with `SyntaxError: Identifier ... has already been declared`; wrap multi-statement extraction in an IIFE instead of redeclaring names. After a failed `eval`, `back`/`forward`/`reload`, `connect`, `state load`, or `tab` selection, the wrapper probes the live page URL itself and keeps an observed page verified, so follow-up reads do not need a manual `get url` unless the result says the page became unverified; because the failed command may still have changed the document, prior page-scoped refs are invalidated and need a fresh `snapshot -i` before reuse.
 
 On tabbed or hidden-DOM pages, `get text <selector>` reads the upstream-selected match, which may be hidden even when a later match is visible. For non-`@ref`, non-simple-id CSS selectors with multiple matches, including successful `batch` steps, the wrapper may add `Selector text visibility warning`, `details.selectorTextVisibility` (and `details.selectorTextVisibilityAll` for multiple batched warnings), and `inspect-visible-text-candidates` next actions. The warning names the matching `details.nextActions` id so agents know to use a fresher `snapshot -i`, a visible `@ref`, or a more specific selector instead of trusting hidden tab content. If the probe still leaves multiple visible candidates, do not keep reading the broad selector; switch to a current visible `@ref`, add a narrower selector such as a known panel/container id, or use a targeted `eval --stdin` expression that filters for visible elements and returns the intended index/text.
 
@@ -401,7 +433,7 @@ The same classification drives plain `network requests` presentation: when any r
 
 Optional `loadState`, `checkNetwork`, `checkConsole`, and `checkErrors` default to `"domcontentloaded"`, `true`, `true`, and `true` for URL-opening QA; set a check to `false` to skip that diagnostic. For `qa.attached`, the diagnostic checks default to `false` because upstream buffers may predate the current check; opt in with `checkNetwork`, `checkConsole`, or `checkErrors` when preserved-buffer failures are desired. Omit `expectedText` and `expectedSelector` when you only need load plus diagnostics.
 
-For attached Electron or manually connected CDP sessions, use `qa.attached` after the session exists. It does not open a URL and rejects `sessionMode: "fresh"` because it checks the current managed session. Before running diagnostics, the wrapper requires a readable `http:` or `https:` page URL on the attached session; missing URLs, read failures, and non-http(s) surfaces fail fast with recovery `nextActions` such as `tab list` and `snapshot -i` instead of running the full QA batch. Unlike URL-opening QA, `qa.attached` preserves existing upstream network/console/page-error buffers; by default it does not inspect those buffers so stale rows do not false-fail a current-page smoke check. Set `checkNetwork`, `checkConsole`, or `checkErrors` to `true` to opt into preserved-buffer diagnostics; model-visible text and `details.compiledQaPreset.checks.diagnosticsResetAtStart` call out that preserved diagnostics may include earlier events.
+For attached Electron or manually connected CDP sessions, use `qa.attached` after the session exists. It does not open a URL and rejects `sessionMode: "fresh"` because it checks the current managed session. Before running diagnostics, the wrapper requires a readable non-empty page URL on the attached session; missing URLs and read failures fail fast with recovery `nextActions` such as `tab list` and `snapshot -i` instead of running the full QA batch. `file:`, custom-scheme, and other attached targets are accepted. Unlike URL-opening QA, `qa.attached` preserves existing upstream network/console/page-error buffers; by default it does not inspect those buffers so stale rows do not false-fail a current-page smoke check. Set `checkNetwork`, `checkConsole`, or `checkErrors` to `true` to opt into preserved-buffer diagnostics; model-visible text and `details.compiledQaPreset.checks.diagnosticsResetAtStart` call out that preserved diagnostics may include earlier events.
 
 ```json
 { "qa": { "attached": true, "expectedText": "Explorer", "screenshotPath": ".dogfood/electron.png" } }
@@ -470,17 +502,17 @@ Do not omit the load state value; use `wait --load <state>` with `load`, `domcon
 
 For desktop-host readiness, prefer condition waits over fixed sleeps. Use this ladder: `wait --text` / `wait --url` / `wait --fn` / `wait --load <state>` / `wait --download` when a real condition exists; after raw `connect`, run `tab list` → `tab t<N>` → condition wait or `snapshot -i`; after wrapper-owned `electron.launch`, use `electron.probe` / `electron.status` for launch health or target mismatch; use `qa.attached` when expected text or selector plus diagnostics can express the check. Upstream `agent-browser 0.31.1` supports `wait --url` glob forms such as `**/dashboard` against the full active URL. Fixed waits are a last resort: use explicit `--timeout` or top-level `timeoutMs` for legitimately slow waits, and treat a successful fixed-wait payload such as `"waited":"timeout"` as elapsed time only, not proof that the desktop host finished. Verify with an observed condition, fresh snapshot, or screenshot before continuing.
 
-Use `wait --download [path]` after an earlier action has already started a browser download, such as a dashboard export button that responds asynchronously:
+Use `wait --download [path]` after an earlier action has already started a browser download, such as a dashboard export button that responds asynchronously. Use the control's current snapshot ref (for example `@e5`):
 
 ```json
-{ "args": ["click", "@export"] }
+{ "args": ["click", "@e5"] }
 { "args": ["wait", "--download", "/tmp/report.csv"] }
 ```
 
 For one-call flows, put the click and wait in `batch`; the wait step keeps the saved-file metadata in `details.batchSteps[n].savedFilePath` and `details.batchSteps[n].savedFile`:
 
 ```json
-{ "args": ["batch"], "stdin": "[[\"click\",\"@export\"],[\"wait\",\"--download\",\"/tmp/report.csv\"]]" }
+{ "args": ["batch"], "stdin": "[[\"click\",\"@e5\"],[\"wait\",\"--download\",\"/tmp/report.csv\"]]" }
 ```
 
 A successful wait-based download renders a readable summary such as `Download completed: /tmp/report.csv` and exposes top-level `details.savedFilePath` plus `details.savedFile` for non-batch calls. With current upstream `agent-browser`, `wait --download <path>` may report the requested path before this environment can verify that the file was persisted there. Treat `details.savedFilePath` as upstream-reported metadata unless `details.artifacts[].exists` is true. Upstream tracking: [vercel-labs/agent-browser#1300](https://github.com/vercel-labs/agent-browser/issues/1300).
@@ -525,7 +557,7 @@ This manifest cap controls what appears in `details.artifactManifest` and in sum
 
 Browser close commands (`close`, `quit`, or `exit`) are also not file cleanup. If `details.artifactManifest` is present with a non-empty `entries` list, a successful close command appends a compact `Artifact lifecycle` note and reports `details.artifactCleanup` with the current retention summary and the same host-owned cleanup `note` as the contract (`extensions/agent-browser/lib/orchestration/browser-run/diagnostics.ts`, `getArtifactCleanupGuidance`). Up to ten distinct user-chosen paths that still exist on disk appear in `explicitArtifactPaths` when matching `explicit-path` manifest rows exist in the recent window; deleted/stale paths are skipped. Otherwise that array is empty and the visible text stays compact while the structured detail still reminds you that close commands do not delete saved files. Delete any paths you care about with host file tools after inspection; the native browser tool intentionally does not remove arbitrary user-chosen filesystem paths.
 
-Oversized snapshots and oversized generic outputs are different: when a persisted pi session is available, their wrapper-managed spill files are stored under the private session artifact directory and are governed by the byte budget `PI_AGENT_BROWSER_SESSION_ARTIFACT_MAX_BYTES` (default 32 MiB). Raise that byte budget as well for long QA sessions that need many full raw snapshots or large text spills to survive reload/resume.
+Oversized snapshots and oversized generic outputs are different: when a persisted pi session is available, their wrapper-managed spill files are stored under the private session artifact directory and are governed by the byte budget `PI_AGENT_BROWSER_SESSION_ARTIFACT_MAX_BYTES` (default 32 MiB). Raise that byte budget as well for long QA sessions that need many full redacted snapshots or large text spills to survive reload/resume.
 
 ### Switch from an already-active implicit session to a fresh profiled or alternate-browser launch
 
@@ -570,7 +602,7 @@ If the result says `Pending confirmation id: c_8f3a1234`, choose one follow-up:
 { "args": ["deny", "c_8f3a1234"] }
 ```
 
-Confirmation context may be redacted when it contains credentials, tokens, cookies, or auth-bearing URLs. Use the id exactly as printed.
+Confirmation context may be redacted when it contains credentials, tokens, cookies, or auth-bearing URLs. URL scrubbing covers SAMLRequest, SAMLResponse, RelayState, and auth-context `state` / `nonce` while retaining ordinary non-auth state URLs; persisted snapshot spills receive the same redaction, while exact internal page-target URLs remain available to browser state logic. Use the id exactly as printed.
 
 ### Use stateful browser-context commands safely
 
@@ -615,7 +647,7 @@ Session note: `skills list`, `skills get …`, and `skills path …` are **state
 | `skills list` | List available CLI-bundled skills. |
 | `skills get core` | Print the core usage guide. |
 | `skills get core --full` | Print the full version-matched core command reference and templates. |
-| `skills get <name>` | Load a specialized skill such as `electron` or `slack`. Common specialized calls include `skills get electron`, `skills get slack`, `skills get dogfood`, `skills get vercel-sandbox`, `skills get agentcore`, and `skills get derive-client` (HAR-to-API-client workflow). |
+| `skills get <name>` | Load a specialized skill such as `electron` or `slack`. Common specialized calls include `skills get electron`, `skills get slack`, `skills get dogfood`, `skills get vercel-sandbox`, `skills get agentcore`, `skills get derive-client` (HAR-to-API-client workflow), and `skills get webmcp-gen` (create and validate page tools). |
 | `skills get <name> --full` | Include a skill's supplementary references/templates when present. |
 | `skills get --all` | Print all visible bundled skills for broad audit/debug work. |
 | `skills path [name]` | Print a skill directory path. |
@@ -628,7 +660,7 @@ Skill-source debugging note: upstream honors `AGENT_BROWSER_SKILLS_DIR` as an ov
 | --- | --- |
 | `open [url]` | Launch the browser and optionally navigate. URL-less `open` stays on `about:blank` so agents can stage routes, cookies, or init scripts before first navigation. |
 | `open <url>` | Navigate to a URL; `goto <url>` and `navigate <url>` are equivalent navigation aliases when a URL is present. |
-| `read [url]` | Fetch agent-readable text from an explicit URL without launching Chrome, or omit the URL to read rendered active-tab DOM. Supports `--raw`, `--require-md`, `--llms <index|full>`, `--outline`, `--filter <text>`, and `--timeout <ms>`. |
+| `read [url]` | Fetch agent-readable text from an explicit URL without requiring a Chrome page, or omit the URL to read rendered active-tab DOM. Supports `--raw`, `--require-md`, `--llms <index|full>`, `--outline`, `--filter <text>`, and `--timeout <ms>`. |
 | `click <sel>` | Click an element or `@ref`. |
 | `click <sel> --new-tab` | Click a link/control while requesting a new tab. |
 | `dblclick <sel>` | Double-click an element. |
@@ -663,7 +695,7 @@ Skill-source debugging note: upstream honors `AGENT_BROWSER_SKILLS_DIR` as an ov
 | `tap <selector>` | Touch-oriented tap alias for iOS/provider workflows. |
 | `swipe <direction> [distance]` | Touch-oriented swipe for iOS/provider workflows. |
 
-On dashboards and other apps with nested scroll containers, `scroll <dir> [px]` can miss because a page-level wheel does not move the document or the intended pane. Without startup-scoped launch flags, the wrapper first applies ordinary `scroll <up|down|left|right> [px|percent]` directly to `document.scrollingElement` with smooth scrolling temporarily disabled; successful movement reports `details.scrollPage`. If the document cannot move, it falls back to upstream wheel behavior. For large fallback calls on an existing or fresh managed session, the wrapper samples viewport and prominent scroll-container positions before and after the command; when nothing changes it reclassifies the nominal upstream success as `failureCategory: "upstream-error"`, prepends `Scroll completed with no observed movement`, appends `Scroll diagnostic: no observed scroll movement`, exposes `details.scrollNoop`, marks `details.data.scrolled: false`, and adds exact `details.nextActions` for a fresh `snapshot -i` and screenshot. Explicit CSS-container calls `scroll <selector> <up|down|left|right> [px|percent]` remain wrapper-handled and report `details.scrollContainer`; `scroll to end` / `scroll to top` report `details.scrollPage`. Calls with startup-scoped flags skip all helper shims so the requested launch configuration runs first. Use these paths before repeating page scrolls; when you need a specific element, prefer `scrollintoview <@ref>` or target the actual scrollable region.
+On dashboards and other apps with nested scroll containers, `scroll <dir> [px]` can miss because a page-level wheel does not move the document or the intended pane. Without startup-scoped launch flags, the wrapper first applies ordinary `scroll <up|down|left|right> [px|percent]` directly to `document.scrollingElement` with smooth scrolling temporarily disabled; successful movement reports `details.scrollPage`. If the document cannot move, it falls back to upstream wheel behavior. For large fallback calls on an existing or fresh managed session, the wrapper samples viewport and prominent scroll-container positions before and after the command; when nothing changes it reclassifies the nominal upstream success as `failureCategory: "upstream-error"`, prepends `Scroll completed with no observed movement`, appends `Scroll diagnostic: no observed scroll movement`, exposes `details.scrollNoop`, marks `details.data.scrolled: false`, and adds exact `details.nextActions` for a fresh `snapshot -i` and screenshot. Explicit CSS-container calls `scroll <selector> <up|down|left|right> [px|percent]` remain wrapper-handled and report `details.scrollContainer`; `scroll to end` / `scroll to top` report `details.scrollPage`. Calls with startup-scoped flags skip all helper shims so the requested launch configuration runs first. Use these paths before repeating page scrolls; when you need a specific element, prefer `scrollintoview <@ref>` or target the actual scrollable region. Do not pass `text=...` to `scrollintoview`: the wrapper rejects that upstream false-success path and returns `scroll-semantic-text-target` (`find text ... hover`) plus `refresh-refs-for-scroll-target` (`snapshot -i`) actions.
 
 Comboboxes vary by app. For native `<select>` controls, prefer raw `select <selector> <value...>`, direct `semanticAction: { action: "select", selector, value|values }`, active-session semantic role/name or label select, or a `job` `select` step instead of clicking option refs; native option refs can be non-boxed in CDP and fail before a real selection. A `click` or `semanticAction` role/name click may focus a searchable custom combobox without opening its option list. For explicit combobox-targeted actions such as `semanticAction` role `combobox`, the wrapper checks whether a combobox-like element is focused, has explicit `aria-expanded` state, and has no visible listbox/options open; this still applies when the semantic action first resolves to a current visible `@ref` before execution. When that happens it appends `Combobox diagnostic: focused combobox did not expose visible options`, exposes `details.comboboxFocus`, and adds exact `details.nextActions` for a fresh `snapshot -i`, `press ArrowDown`, and `press Enter`. Use those instead of assuming click alone expanded the control; reserve visible option refs for custom comboboxes after a fresh snapshot shows the intended option.
 
@@ -717,13 +749,30 @@ These calls return plain text and stay stateless: the extension does not inject 
 | `get attr <selector> <name>`, `get box <selector>`, `get styles <selector>` | Read an attribute, bounding box, or computed styles from matched elements. |
 | `is <what> <selector>` | Check `visible`, `enabled`, or `checked`. |
 | `find <locator> <value> <action> [text]` | Locator types include `role`, `text`, `label`, `placeholder`, `alt`, `title`, and `testid`; selector helpers include `find first <sel>`, `find last <sel>`, and `find nth <n> <sel>`. Role/text filters include `find role <role> --name <name>` and `find ... --exact`. Actions are `click, fill, check, hover, text` only. Prefer `find role` for semantic elements: implicit roles work (`find role heading text --name` for `<h2>`, list/banner landmarks, and similar). Default name matching is a case-insensitive substring; `--exact` makes the accessible name case-sensitive. On misses, upstream 0.32.4+ keeps locator detail such as `Names seen: …` or `No element found: getByRole(...)` instead of a generic flatten. |
-| `mouse <action> [args]` | `move <x> <y>`, `down [btn]`, `up [btn]`, `wheel <dy> [dx]`. Local directory `file:` pages reject interaction commands that could navigate through a ref or scripted event into protected `.agent-browser` state storage. |
+| `mouse <action> [args]` | `move <x> <y>`, `down [btn]`, `up [btn]`, `wheel <dy> [dx]`. |
 | `set <setting> [value]` | `viewport <w> <h>`, `device <name>`, `geo <lat> <lng>`, `offline [on|off]`, `headers <json>`, `credentials <user> <pass>`, and `set media <features>` (`dark`, `light`, and/or `reduced-motion`). |
 | `network <action>` | `network route <url> [--abort|--body <json>] [--resource-type <csv>]`, `network unroute [url]`, `network requests [--clear] [--filter <pattern>] [--type <csv>] [--method <method>] [--status <code|range>]`, `network request <requestId>`, `network har start`, `network har start --content text` (default; embeds text bodies), `network har start --content all`, `network har start --content none`, and `network har stop [path]`. `--resource-type` filters intercepted requests by CDP resource type, such as `script`, `image`, `font`, `xhr`, or `fetch`; request listing filters accept resource types (`xhr,fetch`), methods (`POST`), and statuses (`2xx`, `400-499`). HAR files can include auth headers and bodies—do not share them unredacted. For turning a recording into a reusable API client, load `skills get derive-client`. |
 | `cookies [get|set|clear]` | Manage cookies. Full set form: `cookies set <name> <value> --url <url> --domain <domain> --path <path> --httpOnly --secure --sameSite <Strict|Lax|None> --expires <timestamp>`; also supports `cookies set --curl <file>` for JSON, cURL, or bare Cookie-header bulk imports. |
 | `storage <local|session>` | Manage web storage. |
 
 Privacy note: `cookies get` can expose real profile cookies. Do not run it against `--profile Default` or other authenticated profiles unless the user explicitly needs cookie inspection; prefer task-specific page actions and storage checks.
+
+### WebMCP page tools
+
+WebMCP support is experimental and browser-dependent. Locally managed Chrome enables it by default; use a fresh launch with `--no-webmcp` or set `AGENT_BROWSER_NO_WEBMCP=1` to disable it. Page tool metadata and results come from the page itself.
+
+| Command | Purpose |
+| --- | --- |
+| `webmcp list` | List tools registered by the current page, including each tool's frame id, origin, schema, and annotations. |
+| `webmcp invoke <tool>` | Invoke a page tool with an empty input object. |
+| `webmcp invoke <tool> --params <json|@file>` | Pass a JSON object inline or read it from a caller-selected file. |
+| `webmcp invoke <tool> --frame <frame-id>` | Select the registering frame when a tool name is ambiguous. |
+| `webmcp invoke <tool> --detach` | Start the call and return its invocation id without waiting. |
+| `webmcp invoke <tool> --timeout <ms>` | Bound a blocking invocation in milliseconds. |
+| `webmcp result <id>` | Wait for or read a detached invocation result; accepts `--timeout <ms>`. |
+| `webmcp cancel <id>` | Cancel an active detached invocation. |
+
+`webmcp invoke`, `webmcp result`, and `webmcp cancel` can run page code that changes or navigates the document. The wrapper refreshes page-target evidence and invalidates prior `@e…` refs after these commands. A detached invocation that still reports `pending`, or fails to settle while its target is unknown, leaves the target unverified rather than trusting the immediate URL probe; `result`, `cancel`, `get url`, and explicit navigation remain available for recovery. `details.nextActions` replaces the blocked snapshot suggestion with `verify-page-target-after-pending-webmcp` (`get url`) and warns that the detached tool remains unsettled. After a completed WebMCP mutation, run `snapshot -i` before reusing refs; inside `batch --bail`, put `get url` before that snapshot. `webmcp list` does not invalidate refs. Attached browsers, providers, Lightpanda, Safari/iOS, and Chrome builds without the experimental CDP domain may return `webmcp_unsupported`.
 
 ### Tabs
 
@@ -737,6 +786,8 @@ Stable tab ids look like `t1`, `t2`, and `t3`. Optional user labels such as `doc
 | `tab new --label <name> [url]` | Open a new tab with a user label. |
 | `tab <t<N>|label>` | Switch to a tab by id or label. CDP target ids from `tab list --json` are also accepted and stay stable across daemon restarts. |
 | `tab close [t<N>|label|target]` | Close the current tab or a referenced tab. Generic references in workflows may say `tab close [target]`; use a stable `t<N>` id, label, or CDP target id when you have one. |
+
+After successful standalone tab selection or close, the wrapper live-probes `get url` and, for non-blank pages, `get title` before committing the active target. Tab transitions always refresh the title even when the URL matches the prior tab, and an explicit selection of an existing `about:blank` tab or a close that reveals one remains on that live target instead of triggering prior-tab correction. A successful probe clears the unverified-page gate for the next command; if the probe fails, `details.sessionTabTargetUnknown` stays true and recovery still starts with `get url`.
 
 With `--pin-tab`, a closed bound tab fails as `tab_gone` (`data.targetId`, optional `data.lastUrl`) instead of falling back to another tab.
 
@@ -753,9 +804,9 @@ With `--pin-tab`, a closed bound tab fails as `tab_gone` (`data.targetId`, optio
 | `snapshot -d <n>` / `snapshot --depth <n>` | Limit tree depth. |
 | `snapshot -s <sel>` / `snapshot --selector <sel>` | Scope to a CSS selector. |
 
-When a snapshot is too large for inline output, the Pi wrapper renders a compact view before spilling the full raw snapshot to `details.fullOutputPath`. Compact snapshots are main-content-first, but dense pages and desktop host screens can still hide actionable controls in omitted content; scan `Omitted high-value controls` before opening the spill file. That bounded section favors editable/searchbox/textbox/combobox controls, named tab/surface controls, primary action buttons, and named action links such as row/navigation links and repository-style result links, then includes other useful controls such as checkboxes, radios, options, and menuitems that were not already listed under key refs or other refs. When that section appears, `details.data.highValueControlRefIds` repeats the same visible ref ids for programmatic follow-up alongside fields such as `previewMode`, `previewSections`, and counts on `details.data` (see [`TOOL_CONTRACT.md`](TOOL_CONTRACT.md#details)).
+When a snapshot is too large for inline output, the Pi wrapper renders a compact view before spilling the full redacted snapshot to `details.fullOutputPath`. Compact snapshots are main-content-first, but dense pages and desktop host screens can still hide actionable controls in omitted content; scan `Omitted high-value controls` before opening the spill file. That bounded section favors editable/searchbox/textbox/combobox controls, named tab/surface controls, primary action buttons, and named action links such as row/navigation links and repository-style result links, then includes other useful controls such as checkboxes, radios, options, and menuitems that were not already listed under key refs or other refs. When that section appears, `details.data.highValueControlRefIds` repeats the same visible ref ids for programmatic follow-up alongside fields such as `previewMode`, `previewSections`, and counts on `details.data` (see [`TOOL_CONTRACT.md`](TOOL_CONTRACT.md#details)).
 
-For dense pages, the wrapper also accepts `snapshot -i --search <text>` and `snapshot -i --filter role=<role>` as wrapper-side filters. It runs upstream `snapshot` without those wrapper-only flags, records the full returned ref map in `details.refSnapshot` for stale-ref safety, and renders matching direct refs plus surrounding snapshot context in the model-visible snapshot with `details.snapshotFilter` counts. The visible summary distinguishes direct ref matches from surrounding lines so contextual/nested output does not look like a ref-count mismatch. Add wrapper-side `--viewport` when scroll position, viewport size, document size, and sampled scroll-container offsets matter; it runs one read-only `eval --stdin` probe and reports `details.snapshotViewport`. Add wrapper-side `--diff` to compare the current ref map with the previous wrapper-tracked snapshot for that session and report `details.snapshotDiff` added/removed/changed refs. Use these flags when you need controls like checkout buttons, all comboboxes, above/below-fold context, or a quick before/after ref delta without reading a full spill file.
+For dense pages, the wrapper also accepts `snapshot -i --search <text>` and `snapshot -i --filter role=<role>` as wrapper-side filters. It runs upstream `snapshot` without those wrapper-only flags, records the full returned ref map in `details.refSnapshot` for stale-ref safety, and renders matching direct refs plus surrounding snapshot context in the model-visible snapshot with `details.snapshotFilter` counts. Search also runs one bounded read-only rendered-DOM text probe across the full document, including below-fold content and accessible labels, so visible warnings or label-only controls omitted from the accessibility snapshot still surface under `Rendered page text matches`; hidden elements stay excluded. The visible summary distinguishes direct ref matches from rendered-text/context matches so contextual output does not look like a ref-count mismatch. Add wrapper-side `--viewport` when scroll position, viewport size, document size, and sampled scroll-container offsets matter; it runs one read-only `eval --stdin` probe and reports `details.snapshotViewport`. Add wrapper-side `--diff` to compare the current ref map with the previous wrapper-tracked snapshot for that session and report `details.snapshotDiff` added/removed/changed refs. Use these flags when you need controls like checkout buttons, all comboboxes, above/below-fold context, or a quick before/after ref delta without reading a full spill file.
 
 ### Wait
 
@@ -826,6 +877,7 @@ Long-running or lifecycle commands should be explicitly paired with cleanup call
 | `chat` | Start interactive chat when stdin is a TTY. |
 | `dashboard [start]` | Start the dashboard server on the default port `4848`. |
 | `dashboard start --port <n>` | Start the dashboard on a specific port. |
+| `dashboard start --allowed-origins <origins>` | Allow comma-separated exact HTTPS reverse-proxy origins. Environment: `AGENT_BROWSER_DASHBOARD_ALLOWED_ORIGINS`. |
 | `dashboard stop` | Stop the dashboard server. |
 | `device list` | List available iOS simulators. Use with `-p ios` when exercising iOS provider flows. |
 | `install` | Install browser binaries. |
@@ -838,10 +890,10 @@ Long-running or lifecycle commands should be explicitly paired with cleanup call
 | `plugin run <name> <type>` | Run a `command.run` or custom plugin request over the agent-browser plugin stdio protocol. |
 | `auth login <name> --credential-provider <plugin>` | Resolve credentials just-in-time from a configured credential plugin (e.g. a vault) instead of saved passwords; pair with `--item <ref>` and optional selector overrides. Credentials are not stored locally. |
 | `mcp --help` | Show MCP server help through the native tool. |
-| `mcp` | Start a local MCP stdio server for external MCP clients; bare native-tool calls are rejected before spawn. |
+| `mcp` | Start a local MCP stdio server for external MCP clients; bare native-tool calls are rejected before spawn. External clients can opt into experimental page tools with `mcp --tools core,webmcp`. |
 | `profiles` | List available Chrome profiles. |
 
-When these commands are invoked through the native `agent_browser` tool, structured diagnostic/status outputs are rendered as compact summaries. As a checkout-auth isolation boundary, `session list` omits wrapper-managed `piab-*` live-session rows, `state list` omits wrapper-managed `piab-r2-*` rows and legacy `piab-r-*` rows, and explicit `piab-*` session targets are rejected unless this extension instance owns that exact namespace/session; foreign managed `--restore`, `--state`, `state show`, and `state load` references fail before spawn. Broad `state clear` / `state clean` and managed save/rename targets are also blocked; targeted caller-owned state names and paths remain available. Local inspection/setup calls (`auth save/list/show/delete/remove`, `dashboard start/stop`, `device list`, `doctor`, `install`, `upgrade`, `profiles`, `session id`, `session info`, `session list`, `plugin add/list/show/run`, `state list/show/rename`, and targeted `state clear <caller-owned-name>`) are sessionless unless you explicitly pass `--session`; bare `mcp` server calls are blocked except help. Context-dependent calls such as root `session`, untargeted `state clear`, `auth login`, `chat`, and `state save/load` keep normal session behavior. List-like outputs such as sessions, Chrome profiles, auth profiles, network requests, console messages, and page errors include counts and key fields; large outputs are previewed with a `Full output path:` spill file instead of dumping the entire payload into context. For `network requests`, the wrapper shows a failed-request summary split into actionable versus benign low-impact rows, then status, method, URL, resource/mime type, request id, and, when the installed upstream output includes body-like fields, bounded redacted payload, response, and failure/error snippets. Safe request IDs also produce `details.nextActions` for exact request details, actionable failed-request source lookup candidates, filtered request lists, or starting HAR capture before a repro. If the same session has active wrapper-observed network routes, failed/pending/CORS-looking matched request rows add `details.networkRouteDiagnostics` and executable route-mock next actions before the generic request actions. `data:image` artifact rows are omitted from compact request previews but remain in raw `details.data.requests`. `network request <requestId>` can expose upstream full-detail body fields such as response bodies using the same bounded model-facing preview; its request URL stays diagnostic-only and does not overwrite `details.sessionTabTarget` for later ref guards. Clipboard failures that mention `NotAllowedError` or permission denial are usually browser/OS capability limits, not proof that a read, paste, or page mutation happened; prefer page-native reads (`snapshot -i`, `get text`, `eval --stdin`) or direct typing (`keyboard inserttext` / `keyboard type`) when the workflow allows it, and retry true clipboard flows only from an allowed profile/session on a normal `http(s)` page. Header, cookie, auth, token, and other secret-like fields are not expanded in model-facing text or `details.data`; low-risk primitive storage values may remain visible, while command echoes still redact `--body`, `--headers`, `--password`, proxy credentials, auth-bearing URLs, `clipboard write` text, cookie/storage set values, and bearer/basic credential text in positional arguments. Use upstream HAR or full raw details only when complete data is required.
+When these commands are invoked through the native `agent_browser` tool, structured diagnostic/status outputs are rendered as compact summaries. `session list` and `state list` keep every upstream row and restore identifier visible. Explicit sessions, state/restore paths, broad state lifecycle commands, config, local files, and launch environment pass through unchanged. Local inspection/setup calls remain sessionless unless you explicitly pass `--session`; browser-backed or context-dependent calls keep normal managed-session behavior when no explicit session is supplied. List-like outputs such as sessions, Chrome profiles, auth profiles, network requests, console messages, and page errors include counts and key fields; large outputs are previewed with a `Full output path:` spill file instead of dumping the entire payload into context. For `network requests`, the wrapper shows a failed-request summary split into actionable versus benign low-impact rows, then status, method, URL, resource/mime type, request id, and, when the installed upstream output includes body-like fields, bounded redacted payload, response, and failure/error snippets. Safe request IDs also produce `details.nextActions` for exact request details, actionable failed-request source lookup candidates, filtered request lists, or starting HAR capture before a repro. If the same session has active wrapper-observed network routes, failed/pending/CORS-looking matched request rows add `details.networkRouteDiagnostics` and executable route-mock next actions before the generic request actions. `data:image` artifact rows are omitted from compact request previews but remain in raw `details.data.requests`. `network request <requestId>` can expose upstream full-detail body fields such as response bodies using the same bounded model-facing preview; its request URL stays diagnostic-only and does not overwrite `details.sessionTabTarget` for later ref guards. Clipboard failures that mention `NotAllowedError` or permission denial are usually browser/OS capability limits, not proof that a read, paste, or page mutation happened; prefer page-native reads (`snapshot -i`, `get text`, `eval --stdin`) or direct typing (`keyboard inserttext` / `keyboard type`) when the workflow allows it, and retry true clipboard flows only from an allowed profile/session on a normal `http(s)` page. Header, cookie, auth, token, and other secret-like fields are not expanded in model-facing text or `details.data`; low-risk primitive storage values may remain visible, while command echoes still redact `--body`, `--headers`, `--password`, proxy credentials, auth-bearing URLs, `clipboard write` text, cookie/storage set values, and bearer/basic credential text in positional arguments. Use upstream HAR or full raw details only when complete data is required.
 
 ## Optional package config and companion web search
 
@@ -863,6 +915,7 @@ cat > ~/.pi/config/pi-agent-browser-native/config.json <<'JSON'
   "webSearch": {
     "enabled": true,
     "preferredProvider": "exa",
+    "defaultSearchType": "deep-lite",
     "exaApiKey": "$EXA_API_KEY",
     "braveApiKey": "$BRAVE_API_KEY"
   }
@@ -887,7 +940,21 @@ npm exec --yes --package pi-agent-browser-native@latest -- pi-agent-browser-conf
 npm exec --yes --package pi-agent-browser-native@latest -- pi-agent-browser-config browser executable set "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 ```
 
-The optional `agent_browser_web_search` tool is available when Exa or Brave credentials are visible from startup config or trusted session config and the runtime config has not set `webSearch.enabled` to `false`. It is a separate custom tool, not an `agent_browser` input mode, and does not launch a browser. Use it when current/live external web information would help; use `agent_browser` for browser interaction, screenshots, authenticated/profile pages, and DOM inspection after you have a target URL. Prefer it over driving public search-engine forms such as Google with browser `job`/`type` flows, which can redirect headless automation to anti-bot or CAPTCHA pages; do not attempt CAPTCHA bypass. Disable scope is explicit: `web-search disable --global` sets the normal user default, `web-search disable --project` disables it for one repo, and a `PI_AGENT_BROWSER_CONFIG` override containing `{ "version": 1, "webSearch": { "enabled": false } }` wins over both for a hard per-run disable. Loaded config may use plaintext, custom env aliases, interpolation literals, malformed-or-late-bound `$` values, and command-backed web-search keys; the resolved secret reaches the provider request while model-facing tool output and status text stay redacted. `web-search set-key`, `set-command`, and `clear` require `--provider`; `set-env` infers Exa/Brave from `EXA_API_KEY` or `BRAVE_API_KEY` unless you pass `--provider`. For Exa, the tool defaults to `searchType: "auto"` with `contents.highlights: true`; use `fast`, `instant`, `deep-lite`, `deep`, or `deep-reasoning` only when the task needs that latency/depth tradeoff.
+The optional `agent_browser_web_search` tool is available when Exa or Brave credentials are visible from startup config or trusted session config and the runtime config has not set `webSearch.enabled` to `false`. It is a separate custom tool, not an `agent_browser` input mode, and does not launch a browser. Prefer it for current/live external web facts and URL discovery; use `agent_browser` for browser interaction, screenshots, authenticated/profile pages, and DOM inspection after you have a target URL. Prefer it over driving public search-engine forms such as Google with browser `job`/`type` flows, which can redirect headless automation to anti-bot or CAPTCHA pages; do not attempt CAPTCHA bypass. Disable scope is explicit: `web-search disable --global` sets the normal user default, `web-search disable --project` disables it for one repo, and a `PI_AGENT_BROWSER_CONFIG` override containing `{ "version": 1, "webSearch": { "enabled": false } }` wins over both for a hard per-run disable. Loaded config may use plaintext, custom env aliases, interpolation literals, malformed-or-late-bound `$` values, and command-backed web-search keys; the resolved secret reaches the provider request while model-facing tool output and status text stay redacted. `web-search set-key`, `set-command`, and `clear` require `--provider`; `set-env` infers Exa/Brave from `EXA_API_KEY` or `BRAVE_API_KEY` unless you pass `--provider`.
+
+For Exa, effective search type precedence is per-call `searchType` → `webSearch.defaultSearchType` → `auto`, with regular `contents.highlights: true`. Typical latencies are `instant` ~250 ms, `fast` ~450 ms, `auto` ~1 second, `deep-lite` ~4 seconds, `deep` 4–15 seconds, and `deep-reasoning` 12–40 seconds. Prefer `deep-lite` for research before implementation, `deep` for hard multi-source work, and `deep-reasoning` only for exhaustive or still-thin research. Searches are serialized; do not launch several in parallel.
+
+```json
+{
+  "query": "pi-agent-browser-native agent_browser_web_search searchType defaults",
+  "searchType": "deep-lite",
+  "count": 5
+}
+```
+
+Exa-only options include 1–20 `includeDomains` / `excludeDomains`, a six-value `category`, 1–10 deep-mode `additionalQueries`, and `highlightsDynamic`. The `company` and `people` categories cannot combine with `freshness` or `excludeDomains`; invalid combinations fail before the request. Explicit new Exa-only options also fail if Brave resolves as the provider, while the existing `searchType` field remains ignored by Brave. `highlightsDynamic: true` is a research preview and sends Exa's required beta header. Full page text and structured output schemas remain out of scope.
+
+Every Exa request includes a fixed provider instruction to favor primary official sources, requested versions/dates, and distinct results. After normalization, both provider adapters remove later results only when their normalized URLs are exactly equal, retain the first row and provider order, and do not overfetch replacements or guess that distinct paths/query URLs are aliases. `details.duplicatesRemoved` reports removed rows, so returned results may be fewer than `count`. `pageDate` is Exa's estimated `publishedDate` or Brave's `page_age`; Brave may also supply `age`. Neither field proves crawl/retrieval age or a version match. When correctness or version matters, use the page/date clues, constrain one follow-up to the primary domain (`includeDomains` for Exa or `site:` in a Brave query), and read the primary page.
 
 Example config:
 
@@ -897,6 +964,7 @@ Example config:
   "webSearch": {
     "enabled": true,
     "preferredProvider": "exa",
+    "defaultSearchType": "deep-lite",
     "exaApiKey": "$EXA_API_KEY",
     "braveApiKey": "$BRAVE_API_KEY"
   },
@@ -916,15 +984,17 @@ Browser default config is conservative: it adds agent guidance for signed-in/acc
 
 ### Authentication and session flags
 
+`agent-browser` 0.35.0 and newer require separate argv tokens for global flag values (for example, `--args <args>` and `--user-agent <ua>`). The explicit exception is `--restore=<key>`, which is supported when an optional restore key could otherwise be confused with a command word. The wrapper rejects other global `--flag=value` forms before normal command dispatch, including when they trail the command. Plain `--help`, `-h`, `--version`, and `-V` inspection preserves exact caller argv because upstream accepts those top-level inspection shapes. Global flags for `batch` belong before `batch` in top-level `args`; row-local equals forms are rejected without the help/version or `--restore=<key>` exceptions.
+
 - `--profile <name|path>`: reuse Chrome profile login state by directory name from `profiles`, or use a persistent custom profile/profile-directory path when upstream accepts it. Environment: `AGENT_BROWSER_PROFILE`.
 - `--session <name>`: use an isolated session. Environment: `AGENT_BROWSER_SESSION`.
-- `--restore [name]`: auto-save/restore cookies, local storage, and session storage; bare `--restore` uses `--session` as the key. Environment: `AGENT_BROWSER_RESTORE`. Wrapper-owned managed sessions set a Git-checkout-generation-stable restore key automatically unless disabled with `PI_AGENT_BROWSER_MANAGED_SESSION_RESTORE=0` or sticky-disabled after an incompatible launch; a successfully spawned suppressed identity reports `details.managedSessionRestoreDisabled`, meaning later plain follow-ups do not inject the wrapper key. Same-policy follow-ups may keep using that live daemon; any later call that requests incompatible policy first inspects the daemon and blocks if it retains a restore key or cannot be inspected. Any upstream config discovered while planning or browser mutation flag/env disables automatic managed restore without reading caller-selected config content. Subprocesses that receive the wrapper restore key and wrapper-owned closes pin a process-private empty `AGENT_BROWSER_CONFIG` (`0400` on POSIX) in the marked secure-temp lifecycle, so config created after planning cannot alter the browser that receives restored auth. Raw batch argv and batch stdin containing nested `connect`/`batch` also disable restore so an attached browser cannot receive wrapper-managed auth state. A user-private immutable ticket-claim lock serializes daemon policy inspection through the receiving spawn and bridges the pre-update v2 lock path; every lock winner re-inspects the live daemon, and abandoned v2 locks fail closed for manual repair. POSIX process identity probes use absolute `/bin/ps` then `/usr/bin/ps` paths. Before incompatible reuse the wrapper inspects the actual daemon and blocks if it retains any restore key, cannot be inspected, or reports restore-disabled policy without current-process provenance. Same-process `session_tree` changes keep that provenance, while reload/restart/resume intentionally do not restore it from transcript rows; close a still-live blocked daemon first, use a fresh wrapper session, or choose a distinct explicit session. Wrapper-owned subprocesses pin their canonical namespace, including the empty default namespace. Upstream restore files under `~/.agent-browser/` are plaintext unless a valid 64-character hex `AGENT_BROWSER_ENCRYPTION_KEY` is set; automatic restore requires a durable Git checkout generation plus an absolute home root, and on POSIX the wrapper canonicalizes and pins `HOME`, requires trusted non-writable owner ancestry plus stable device/inode/birth-time metadata for the checkout and Git-admin directories, enforces mode `0700` without silently repairing unsafe existing directories, and rejects symlinks/non-directories along the exact restore `sessions` path and `.tmp` write area, while Windows requires that key because POSIX mode checks cannot verify profile ACLs. Wrapper-owned close discards caller config/restore globals and preserves the live daemon's existing restore key rather than injecting one derived from a replacement checkout and records a returned old-generation snapshot against that observed wrapper key. A failed fresh command is followed by an exact-identity daemon probe; live or uninspectable starts remain owned for shutdown cleanup. After a wrapper-owned close succeeds, the wrapper persists its returned state path as an atomic record in a lockless convergent per-key ownership directory (`0700`, with `0600` records, on POSIX), retains the two newest proven snapshots for the exact restore key across Pi restarts, self-heals malformed regular records, removes additional proven snapshots older than 30 days, expires stale ownership-proven snapshots and empty manifests from other restore-key generations after 30 days only when a private lineage record proves the same canonical checkout path, and caps young close churn at 256 records per restore key without invoking namespace-wide `state clean`; unrecorded matching files and the current checkout key are untouched. Restore capabilities and key-bearing paths are redacted from output/transcripts; malformed oversized upstream output is discarded instead of persisted as a parse-failure spill. Checkout/storage/managed-session/state-access policy is revalidated after async setup immediately before spawn. Native Windows command-first adaptation moves only valid leading globals, rewrites valued `--restore <name>` as `--restore=<name>`, consumes only exact lowercase boolean literals, and leaves invalid or command-scoped leading input unchanged.
+- `--restore [name]`: auto-save/restore cookies, local storage, and session storage; bare `--restore` uses `--session` as the key. Environment: `AGENT_BROWSER_RESTORE`. Wrapper-owned implicit sessions set a transcript- and checkout-scoped restore key automatically unless disabled with `PI_AGENT_BROWSER_MANAGED_SESSION_RESTORE=0` or suppressed by incompatible caller launch choices. Explicit restore/state/session/config choices pass through unchanged and remain visible in results. Automatic restore validates only its own checkout/storage identity and coordinates same-daemon reuse so wrapper restore pools cannot mix.
 - `--restore-save <policy>` (`auto`, `always`, or `never`): restore auto-save policy. Environment: `AGENT_BROWSER_RESTORE_SAVE`. Restore-enabled sessions also save periodically while open; `AGENT_BROWSER_AUTOSAVE_INTERVAL_MS` sets the minimum interval in milliseconds (`30000` by default, `0` disables periodic saves but not save-on-close).
 - `--restore-check-url <glob>`, `--restore-check-text <txt>`, `--restore-check-fn <js>`: validate restored state before auto-save. Environments: `AGENT_BROWSER_RESTORE_CHECK_URL`, `AGENT_BROWSER_RESTORE_CHECK_TEXT`, `AGENT_BROWSER_RESTORE_CHECK_FN`.
 - `--namespace <name>`: isolate daemon sockets and restore-state directories. Environment: `AGENT_BROWSER_NAMESPACE`. Upstream and the wrapper canonicalize namespace identity to a lowercase sanitized component (for example, `Team Name` becomes `team-name`).
 - `--session-name <name>`: legacy alias for restore persistence key. Environment: `AGENT_BROWSER_SESSION_NAME`.
 - `--state <path>`: load saved auth state from JSON. Environment: `AGENT_BROWSER_STATE`.
-- `--auto-connect`: connect to a running Chrome to reuse auth state. Environment: `AGENT_BROWSER_AUTO_CONNECT`. Optional booleans use separated tokens (`--auto-connect false`); upstream 0.34.0 does not recognize `--auto-connect=false`, so that token cannot disable an earlier bare `--auto-connect`.
+- `--auto-connect`: connect to a running Chrome to reuse auth state. Environment: `AGENT_BROWSER_AUTO_CONNECT`. Optional booleans use separated tokens (`--auto-connect false`); the wrapper rejects `--auto-connect=false` before dispatch.
 - `--pin-tab`: pin the session to its bound tab. Environment: `AGENT_BROWSER_PIN_TAB`. Sticky per session and not launch-scoped. Commands fail with `tab_gone` instead of falling back when that tab is closed. `--no-pin-tab` disables a previously enabled pin. Optional booleans use separated tokens (`--pin-tab false`).
 - `--headers <json>`: apply HTTP headers scoped to the opened URL's origin.
 - `--init-script <path>`: register a script before first navigation; repeatable. Environment: `AGENT_BROWSER_INIT_SCRIPTS`.
@@ -939,11 +1009,14 @@ Browser default config is conservative: it adds agent guidance for signed-in/acc
 - `--proxy <server>`: proxy server URL. Environments: `AGENT_BROWSER_PROXY`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`.
 - `--proxy-bypass <hosts>`: proxy bypass hosts. Environments: `AGENT_BROWSER_PROXY_BYPASS`, `NO_PROXY`.
 - `--ignore-https-errors`: ignore HTTPS certificate errors. Environment: `AGENT_BROWSER_IGNORE_HTTPS_ERRORS`.
-- `--allow-file-access`: upstream capability, but enabled argv/`AGENT_BROWSER_ALLOW_FILE_ACCESS` forms and file-access-enabling `--args` / `AGENT_BROWSER_ARGS` Chrome switches are rejected by this native wrapper. Local-browser spawns add canonical `--allow-file-access false`; routine HTTP(S) work relies on the protected empty config and cleared raw-args environment instead of sending an empty `--args` launch override. Local-file navigation is limited to wrapper-managed local browsers; caller-owned and attached browsers are blocked because their file-access launch provenance is unknown. A fixed non-empty `--args` value is added only when a wrapper user-agent compatibility session is launching or its daemon is proven inactive; active follow-ups omit it. Explicit validated safe CLI `--args` and `--user-agent` remain usable as launch-scoped input. Attached-session follow-ups omit launch-only defaults. Every spawn removes all caller occurrences before any canonical separated `--allow-file-access false` is added, so unsupported equals forms cannot preserve an earlier enabled flag and config cannot re-enable local filesystem access. Unknown top-level or batch tab/attachment/script/state-load transitions remain blocked for page inspection until `get url` or explicit safe navigation establishes the target. `tab list` and non-content `tab <id>` selection remain available while unknown, but selection stays unverified until `get url`; post-transition summaries (including after arbitrary `eval`) read the live URL before title and stop if the target is a local file page.
+- `--ca-cert <path>`: trust a PEM bundle or DER certificate in an isolated NSS store for locally launched Linux Chromium. Environment: `AGENT_BROWSER_CA_CERT`. Use `sessionMode: "fresh"`; the wrapper disables automatic managed restore for the CA-enabled session while passing the caller-selected certificate path upstream. Upstream requires `certutil` and rejects profiles, CDP/auto-connect, providers, Lightpanda, `--ignore-https-errors`, macOS, and Windows.
+- `--no-ca-cert`: clear retained CA trust. Environment: `AGENT_BROWSER_CLEAR_CA_CERT`. Use `sessionMode: "fresh"` for wrapper-managed sessions.
+- `--allow-file-access`: upstream capability passed through unchanged from argv or `AGENT_BROWSER_ALLOW_FILE_ACCESS`. Raw `--args` / `AGENT_BROWSER_ARGS`, local file navigation, local-page follow-ups, and caller-selected paths remain upstream-owned. The wrapper adds only its fixed compatibility user-agent argument on eligible new managed launches; it does not clear or replace caller launch settings. Ambiguous page-target transitions still require `get url` before later content calls so the agent cannot silently act on the wrong page.
 - `--hide-scrollbars <bool>`: explicitly show or hide native scrollbars in headless Chromium screenshots.
-- `--headed`: ask upstream to show the browser window. Environment: `AGENT_BROWSER_HEADED`. Use it on the first launch, normally with `sessionMode: "fresh"` when changing an existing managed session; verify visibility with screenshot/tab evidence because the wrapper cannot yet prove the OS window is visible to the user.
+- `--headed`: ask upstream to show the browser window. Environment: `AGENT_BROWSER_HEADED`. Use it on the first launch, normally with `sessionMode: "fresh"` when changing an existing managed session. Successful first/fresh local wrapper-managed launches can expose `details.browserWindow.visibility: "unverified"` and a login handoff; attached browsers cannot, but still verify actual OS visibility with the user or screenshot/tab evidence.
 - `--webgpu`: enable upstream's platform-specific WebGPU launch preset. Environment: `AGENT_BROWSER_WEBGPU`; config: `"webgpu": true`. Use it on a fresh local launch. It is incompatible while enabled with `--cdp`, `--auto-connect`, and provider launches. `AGENT_BROWSER_NO_XVFB=1` disables upstream's automatic Xvfb for displayless headed Linux sessions.
-- `--cdp <port>`: connect through Chrome DevTools Protocol. Use it, `--auto-connect`, or `connect <port|url>` once on a named/fresh session, verify with `get url`, then reuse that session without repeating the attach flag. After a successful attachment the wrapper omits local-launch-only `--args` / `--allow-file-access` defaults on follow-ups and cleanup so upstream keeps one CDP connection instead of requesting Chrome permission again. Content-bearing first use is blocked until URL verification; later page reads/interactions live-check the URL because the attached browser can drift externally. `close` clears attachment state.
+- `--no-webmcp`: disable experimental WebMCP support, which upstream 0.36.0 enables by default for locally managed Chrome. Environment: `AGENT_BROWSER_NO_WEBMCP`; config: `noWebmcp`. Use it on a fresh launch; `--no-webmcp false` explicitly enables the launch feature when config or environment disabled it.
+- `--cdp <port|url>`: connect through Chrome DevTools Protocol. Use it, `--auto-connect`, or `connect <port|url>` once on a named/fresh session, verify with `get url`, then reuse that session without repeating the attach flag. After a successful attachment the wrapper avoids re-emitting its own compatibility launch argument; caller launch/config/file-access settings remain unchanged. Content-bearing first use is blocked until URL verification; later page reads/interactions live-check the URL because the attached browser can drift externally. `close` clears attachment state.
 - `--color-scheme <scheme>`: `dark`, `light`, or `no-preference`. Environment: `AGENT_BROWSER_COLOR_SCHEME`.
 - `--download-path <path>`: default browser download directory. Environment: `AGENT_BROWSER_DOWNLOAD_PATH`.
 - `--engine <name>`: browser engine, `chrome` by default or `lightpanda`. Environment: `AGENT_BROWSER_ENGINE`.
@@ -962,7 +1035,7 @@ On Android/Termux, follow the README setup to install the packaged Linux-musl ar
 - `--screenshot-format <fmt>`: `png` or `jpeg`. Environment: `AGENT_BROWSER_SCREENSHOT_FORMAT`.
 - `--content-boundaries`: wrap page output in boundary markers. Environment: `AGENT_BROWSER_CONTENT_BOUNDARIES`.
 - `--max-output <chars>`: truncate page output to N characters. Environment: `AGENT_BROWSER_MAX_OUTPUT`.
-- `--allowed-domains <list>`: restrict browser and `read` traffic to exact or `*.` wildcard domain patterns. Environment: `AGENT_BROWSER_ALLOWED_DOMAINS`. Use a fresh local Chrome context; upstream 0.32.0 rejects containment-unsafe launch modes/state and disables Chromium `RTCPeerConnection` while active. The wrapper also remembers argv-supplied allowed domains for the managed session and fails a successful-looking browser command with `failureCategory: "policy-blocked"` when the final observed `http(s)` URL host is outside that allowlist, including click/navigation escapes after the initial page load.
+- `--allowed-domains <list>`: restrict browser and `read` traffic to exact or `*.` wildcard domain patterns. Environment: `AGENT_BROWSER_ALLOWED_DOMAINS`. Use a fresh local Chrome context; upstream 0.32.0 owns containment and incompatible-mode rejection and disables Chromium `RTCPeerConnection` while active. The wrapper passes the setting and result through unchanged.
 - `--action-policy <path>`: action policy JSON file. Environment: `AGENT_BROWSER_ACTION_POLICY`.
 - `--confirm-actions <list>`: action categories requiring confirmation. Environment: `AGENT_BROWSER_CONFIRM_ACTIONS`.
 - `--confirm-interactive`: interactive confirmations; auto-denies when stdin is not a TTY. Environment: `AGENT_BROWSER_CONFIRM_INTERACTIVE`.
@@ -985,15 +1058,14 @@ Standalone `agent-browser` looks for `agent-browser.json` in these locations, fr
 3. Environment variables, including `AGENT_BROWSER_CONFIG`.
 4. CLI flags.
 
-Use separated `--config <path>` to load a specific config file in standalone upstream; upstream 0.33.2 does not recognize `--config=<path>` as the global config selector. For browser-backed native calls, passive project/user upstream config files are ignored because the wrapper pins a process-private empty config; explicit `--config` and `AGENT_BROWSER_CONFIG` overrides are rejected without reading them. The protected empty config is pinned for every accepted browser-backed spawn so a file created after planning cannot change the browser. Sessionless local/setup commands keep upstream config behavior. This policy is separate from the Pi-scoped package config under `.pi/config/pi-agent-browser-native/`; pass safe browser settings through native `args`/environment or that package's advisory browser guidance. Boolean flags accept optional `true` or `false` values, such as `--headed false` or `--webgpu false`, to override config. Browser extensions from user and project configs are merged rather than replaced.
+Use separated `--config <path>` to load a specific upstream config; upstream 0.33.2 does not recognize `--config=<path>` as the global selector. Browser-backed and sessionless native calls preserve `--config`, `AGENT_BROWSER_CONFIG`, passive project/user config, and other upstream environment exactly as supplied. The Pi-scoped package config under `.pi/config/pi-agent-browser-native/` remains separate. Boolean flags accept optional `true` or `false` values, such as `--headed false`, `--webgpu false`, or `--no-webmcp false`, to override config. Browser extensions from user and project configs are merged rather than replaced.
 
 Other useful environment variables include `AGENT_BROWSER_DEFAULT_TIMEOUT`, `AGENT_BROWSER_AUTOSAVE_INTERVAL_MS`, `AGENT_BROWSER_STREAM_PORT`, `AGENT_BROWSER_STREAM_QUALITY`, `AGENT_BROWSER_STREAM_MAX_WIDTH`, `AGENT_BROWSER_STREAM_MAX_HEIGHT`, `AGENT_BROWSER_IDLE_TIMEOUT_MS`, `AGENT_BROWSER_ENCRYPTION_KEY`, `AGENT_BROWSER_STATE_EXPIRE_DAYS`, `AGENT_BROWSER_IOS_DEVICE`, `AGENT_BROWSER_IOS_UDID`, `AI_GATEWAY_URL`, `AI_GATEWAY_API_KEY`, provider credential names, and AWS credential names when using AgentCore. The upstream child receives the parent environment plus wrapper overrides such as the managed socket directory, clamped default operation timeout, canonical owned-session namespace (including empty default), and Pi-transcript- plus Git-checkout-generation-scoped `AGENT_BROWSER_RESTORE` for wrapper-owned managed sessions (`buildAgentBrowserProcessEnv` in `extensions/agent-browser/lib/process.ts`, ownership carried by the wrapper's typed process options and call-scoped managed-session context). Model-facing output still redacts recognized secret values.
 
 ## Wrapper-specific behavior worth knowing
 
 - The extension may keep following one implicit managed session across later tool calls.
-- Protected `.agent-browser` paths are rejected equally in CLI operands (including dash-prefixed values), raw Chrome args, and path-bearing environment mirrors, including `AGENT_BROWSER_STATE`, `AGENT_BROWSER_PROFILE`, `AGENT_BROWSER_CONFIG`, `AGENT_BROWSER_EXECUTABLE_PATH`, `AGENT_BROWSER_EXTENSIONS`, `AGENT_BROWSER_INIT_SCRIPTS`, `AGENT_BROWSER_ACTION_POLICY`, download/screenshot directories, `AGENT_BROWSER_SKILLS_DIR`, and the wrapper socket directory.
-- If launch-scoped flags like `--profile`, `--args`, `--user-agent`, `--executable-path`, `--webgpu`, `--restore`, `--restore-save`, restore check flags, `--namespace`, `--session-name`, `--cdp`, `--state`, `--auto-connect`, `--init-script`, `--enable`, `--provider` / `-p`, or provider device flags like `--device` would replace or be ignored by an already-active managed session, retry with `sessionMode: "fresh"`. When the call explicitly names the current managed session, the structured recovery payload removes that `--session` so the fresh rotation can succeed.
+- If launch-scoped flags like `--profile`, `--args`, `--user-agent`, `--executable-path`, `--ca-cert`, `--no-ca-cert`, `--webgpu`, `--no-webmcp`, `--restore`, `--restore-save`, restore check flags, `--namespace`, `--session-name`, `--cdp`, `--state`, `--auto-connect`, `--init-script`, `--enable`, `--provider` / `-p`, or provider device flags like `--device` would replace or be ignored by an already-active managed session, retry with `sessionMode: "fresh"`. When the call explicitly names the current managed session, the structured recovery payload removes that `--session` so the fresh rotation can succeed.
 - If a `sessionMode: "fresh"` call fails (including upstream failure, timeout, missing binary, or **`qa`** reclassification after a nominally successful batch), read `details.managedSessionOutcome` before assuming where the next default call will go: `preserved` means the prior managed session remains current, while `abandoned` means no managed session became current. When the failure reason is not the fresh launch itself—for example `failureCategory: "qa-failure"`—`status`/`summary` may still describe the managed-session transition while `succeeded` on this object matches the final tool outcome.
 <!-- agent-browser-playbook:start wrapper-tab-recovery -->
 <!-- Generated from extensions/agent-browser/lib/playbook.ts. Run `npm run docs -- playbook write` to update. -->
@@ -1003,8 +1075,8 @@ Other useful environment variables include `AGENT_BROWSER_DEFAULT_TIMEOUT`, `AGE
 - If a known session target unexpectedly reports about:blank, agent_browser best-effort re-selects the prior intended target when it still exists; if recovery fails, it records the observed about:blank target and reports exact recovery guidance instead of treating the prior page as active.
 - If upstream reports tab_gone, the pinned bound tab is gone; use details.nextActions (tab list / tab new) instead of assuming another tab is yours.
 <!-- agent-browser-playbook:end wrapper-tab-recovery -->
-- Wrapper-spawned commands clamp `AGENT_BROWSER_DEFAULT_TIMEOUT` to the upstream documented 25-second default and use a 35-second child-process watchdog (`PI_AGENT_BROWSER_PROCESS_TIMEOUT_MS` overrides the default 35s budget; top-level `timeoutMs` overrides it per browser CLI call). Explicit `wait <ms>` or `wait --timeout <ms>` calls can exceed that default; when top-level `timeoutMs` is omitted, the wrapper derives a subprocess watchdog from the requested wait duration plus a small grace window. Dialog commands are additionally bounded to 5 seconds (`PI_AGENT_BROWSER_DIALOG_PROCESS_TIMEOUT_MS`), and click/tap/find refs or tokens plus `eval --stdin` snippets that look like alert/confirm/prompt/dialog triggers are bounded to 8 seconds (`PI_AGENT_BROWSER_DIALOG_TRIGGER_PROCESS_TIMEOUT_MS`). When any watchdog fires, `details.timeoutPartialProgress` may include a planned step list with per-step status (including `generatedFrom` labels for wrapper-inserted rows such as `open.loadState`) and a `retry-timeout-step` next action only when the first incomplete step is read-only or idempotent, or `inspect-current-page-after-timeout` when the session is still inspectable but the incomplete step may be mutating and should not be blindly retried. It also includes current page URL from best-effort session `get url`, followed by `get title` only for a verified non-file URL (or a planned URL inferred from the step list when the session cannot answer), an `openedButPostOpenTimedOut` classification only when a live page URL was recovered before a later step hung, and declared artifact paths such as `screenshot`, `pdf`, `download`, or `wait --download` outputs with existence/state checks; the same evidence is appended under `Timeout partial progress` in visible text with URL/path redaction.
-- Oversized snapshots and oversized generic outputs may be compacted in tool content, with the full raw output written to a spill file path shown directly in the tool result. Recent artifact metadata is bounded by `PI_AGENT_BROWSER_SESSION_ARTIFACT_MANIFEST_MAX_ENTRIES` (default 100); persisted spill files are separately bounded by `PI_AGENT_BROWSER_SESSION_ARTIFACT_MAX_BYTES` (default 32 MiB).
+- Wrapper-spawned commands clamp `AGENT_BROWSER_DEFAULT_TIMEOUT` to the upstream documented 25-second default and use a 35-second child-process watchdog (`PI_AGENT_BROWSER_PROCESS_TIMEOUT_MS` overrides the default 35s budget; top-level `timeoutMs` overrides it per browser CLI call). Explicit `wait <ms>`, `wait --timeout <ms>`, and WebMCP `invoke` / `result --timeout <ms>` calls can exceed that default; when top-level `timeoutMs` is omitted, the wrapper derives a subprocess watchdog from the requested command duration plus a small grace window. Batch budgeting reads the same effective source as upstream: raw command strings when present, otherwise stdin rows. Dialog commands are additionally bounded to 5 seconds (`PI_AGENT_BROWSER_DIALOG_PROCESS_TIMEOUT_MS`), and click/tap/find refs or tokens plus `eval --stdin` snippets that look like alert/confirm/prompt/dialog triggers are bounded to 8 seconds (`PI_AGENT_BROWSER_DIALOG_TRIGGER_PROCESS_TIMEOUT_MS`). When any watchdog fires, `details.timeoutPartialProgress` may include a planned step list with per-step status (including `generatedFrom` labels for wrapper-inserted rows such as `open.loadState`) and a `retry-timeout-step` next action only when the first incomplete step is read-only or idempotent, or `inspect-current-page-after-timeout` when the target is already verified but the incomplete step may be mutating and should not be blindly retried. If the target is unknown, standalone snapshots are removed and visible failure text plus `details.nextActions` show `verify-page-target-after-timeout`, including its session-scoped `batch --bail` args and short stdin for fail-fast `get url` then `snapshot -i`; dialog status/accept/dismiss actions remain allowed for blocking-dialog recovery. It also includes current page URL from best-effort session `get url`, followed by `get title` only after a URL is recovered (or a planned URL inferred from the step list when the session cannot answer), an `openedButPostOpenTimedOut` classification only when a live page URL was recovered before a later step hung, and declared artifact paths such as `screenshot`, `pdf`, `download`, or `wait --download` outputs with existence/state checks; the same evidence is appended under `Timeout partial progress` in visible text with URL/path redaction.
+- Oversized snapshots and oversized generic outputs may be compacted in tool content, with the full redacted output written to a spill file path shown directly in the tool result. Recent artifact metadata is bounded by `PI_AGENT_BROWSER_SESSION_ARTIFACT_MANIFEST_MAX_ENTRIES` (default 100); persisted spill files are separately bounded by `PI_AGENT_BROWSER_SESSION_ARTIFACT_MAX_BYTES` (default 32 MiB).
 - The wrapper keeps `--help` and `--version` stateless so they do not consume the implicit managed-session slot.
 
 ## Generated capability baseline
@@ -1012,14 +1084,14 @@ Other useful environment variables include `AGENT_BROWSER_DEFAULT_TIMEOUT`, `AGE
 <!-- agent-browser-capability-baseline:start capability-token-baseline -->
 <!-- Generated from scripts/agent-browser-capability-baseline.mjs. Run `npm run docs -- command-reference write` to update. Do not edit manually. -->
 <details>
-<summary>Generated verifier capability baseline for agent-browser 0.34.0</summary>
+<summary>Generated verifier capability baseline for agent-browser 0.36.0</summary>
 
 This generated block is review data for maintainers. The human-authored reference sections above remain the readable command guide.
 
 #### Source evidence
 - repository: `vercel-labs/agent-browser`
-- upstream HEAD: `548b159b30eef119ccf6846c8bc807d0eaa3f6f8`
-- upstream package version: `0.34.0`
+- upstream HEAD: `eb05921bad874cd2a1b4fa5d1149f1ed26576cae`
+- upstream package version: `0.36.0`
 - inspected: `agent-browser --version`
 - inspected: `agent-browser --help`
 - inspected: `selected agent-browser <command> --help output`
@@ -1029,10 +1101,14 @@ This generated block is review data for maintainers. The human-authored referenc
 - inspected: `agent-browser skills list`
 - inspected: `agent-browser skills get core --full`
 - inspected: `agent-browser skills get derive-client --full`
+- inspected: `agent-browser skills get webmcp-gen --full`
 - inspected: `README.md`
 - inspected: `CHANGELOG.md`
 - inspected: `agent-browser.schema.json`
+- inspected: `bin/agent-browser.js`
+- inspected: `cli/src/ca_bundle.rs`
 - inspected: `cli/src/commands.rs`
+- inspected: `cli/src/mcp.rs`
 - inspected: `cli/src/flags.rs`
 - inspected: `cli/src/read.rs`
 - inspected: `cli/src/doctor/webgpu.rs`
@@ -1041,14 +1117,25 @@ This generated block is review data for maintainers. The human-authored referenc
 - inspected: `cli/src/native/browser.rs`
 - inspected: `cli/src/native/tab_binding.rs`
 - inspected: `cli/src/native/daemon.rs`
+- inspected: `cli/src/native/element.rs`
+- inspected: `cli/src/native/stream/cdp_loop.rs`
+- inspected: `cli/src/native/stream/dashboard.rs`
+- inspected: `cli/src/native/test_fixtures/webmcp_frame_probe.html`
+- inspected: `cli/src/native/test_fixtures/webmcp_probe.html`
+- inspected: `cli/src/native/webmcp.rs`
 - inspected: `cli/src/output.rs`
 - inspected: `docs/src/app/webgpu/page.mdx`
+- inspected: `docs/src/app/webmcp/page.mdx`
 - inspected: `docs/src/app/network/page.mdx`
+- inspected: `docs/src/app/proxy/page.mdx`
 - inspected: `docs/src/app/selectors/page.mdx`
 - inspected: `docs/src/app/skills/page.mdx`
 - inspected: `docs/src/app/commands/page.mdx`
 - inspected: `skill-data/derive-client/SKILL.md`
 - inspected: `skill-data/core/SKILL.md`
+- inspected: `skill-data/protected-vercel-deployments/SKILL.md`
+- inspected: `skill-data/webmcp-gen/SKILL.md`
+- inspected: `test/launcher.test.mjs`
 - inspected: `packages/@agent-browser/eve/README.md`
 - inspected: `packages/@agent-browser/eve/package.json`
 - inspected: `packages/@agent-browser/eve/test/extension.test.mjs`
@@ -1063,6 +1150,8 @@ This generated block is review data for maintainers. The human-authored referenc
 - skills list: `agent-browser skills list`
 - core skill full: `agent-browser skills get core --full`
 - vercel sandbox skill full: `agent-browser skills get vercel-sandbox --full`
+- protected Vercel deployments skill full: `agent-browser skills get protected-vercel-deployments --full`
+- WebMCP generation skill full: `agent-browser skills get webmcp-gen --full`
 - open help: `agent-browser open --help`
 - read help: `agent-browser read --help`
 - click help: `agent-browser click --help`
@@ -1116,12 +1205,12 @@ This generated block is review data for maintainers. The human-authored referenc
 - plugin help: `agent-browser plugin --help`
 
 #### Inventory sections
-- Built-in skills: 16 human-doc token(s), 18 upstream token(s)
+- Built-in skills: 19 human-doc token(s), 24 upstream token(s)
 - Core page, element, navigation, and extraction commands: 82 human-doc token(s), 84 upstream token(s)
 - Sessions, state, tabs, frames, dialogs, and windows: 28 human-doc token(s), 25 upstream token(s)
-- Network, storage, artifacts, diagnostics, and performance: 49 human-doc token(s), 60 upstream token(s)
-- Batch, auth, confirmations, setup, dashboard, devices, and AI commands: 33 human-doc token(s), 37 upstream token(s)
-- Global flags, config, providers, policy, and environment: 145 human-doc token(s), 113 upstream token(s)
+- Network, storage, artifacts, diagnostics, and performance: 57 human-doc token(s), 67 upstream token(s)
+- Batch, auth, confirmations, setup, dashboard, devices, and AI commands: 36 human-doc token(s), 40 upstream token(s)
+- Global flags, config, providers, policy, and environment: 152 human-doc token(s), 119 upstream token(s)
 
 #### Human-authored doc tokens required
 ##### Built-in skills
@@ -1135,8 +1224,11 @@ This generated block is review data for maintainers. The human-authored referenc
 - `skills get slack`
 - `skills get dogfood`
 - `skills get vercel-sandbox`
+- `skills get protected-vercel-deployments`
 - `skills get agentcore`
 - `skills get derive-client`
+- `skills get webmcp-gen`
+- `webmcp.init.js`
 - `@agent-browser/sandbox`
 - `installSystemDependencies: false`
 - `skills path [name]`
@@ -1271,6 +1363,14 @@ This generated block is review data for maintainers. The human-authored referenc
 - `cookies set <name> <value> --url <url> --domain <domain> --path <path> --httpOnly --secure --sameSite <Strict|Lax|None> --expires <timestamp>`
 - `cookies set --curl <file>`
 - `storage <local|session>`
+- `webmcp list`
+- `webmcp invoke <tool>`
+- `webmcp invoke <tool> --params <json|@file>`
+- `webmcp invoke <tool> --frame <frame-id>`
+- `webmcp invoke <tool> --detach`
+- `webmcp invoke <tool> --timeout <ms>`
+- `webmcp result <id>`
+- `webmcp cancel <id>`
 - `diff snapshot`
 - `diff snapshot --baseline <file> --selector <sel> --compact --depth <n>`
 - `diff screenshot --baseline`
@@ -1323,6 +1423,8 @@ This generated block is review data for maintainers. The human-authored referenc
 - `chat <message>`
 - `dashboard [start]`
 - `dashboard start --port <n>`
+- `dashboard start --allowed-origins <origins>`
+- `AGENT_BROWSER_DASHBOARD_ALLOWED_ORIGINS`
 - `dashboard stop`
 - `device list`
 - `install`
@@ -1335,6 +1437,7 @@ This generated block is review data for maintainers. The human-authored referenc
 - `doctor --webgpu --headed`
 - `doctor --json`
 - `mcp`
+- `mcp --tools core,webmcp`
 - `plugin add <ref>`
 - `plugin [list]`
 - `plugin show <name>`
@@ -1391,6 +1494,10 @@ This generated block is review data for maintainers. The human-authored referenc
 - `NO_PROXY`
 - `--ignore-https-errors`
 - `AGENT_BROWSER_IGNORE_HTTPS_ERRORS`
+- `--ca-cert <path>`
+- `--no-ca-cert`
+- `AGENT_BROWSER_CA_CERT`
+- `AGENT_BROWSER_CLEAR_CA_CERT`
 - `--allow-file-access`
 - `AGENT_BROWSER_ALLOW_FILE_ACCESS`
 - `--hide-scrollbars <bool>`
@@ -1398,9 +1505,12 @@ This generated block is review data for maintainers. The human-authored referenc
 - `AGENT_BROWSER_HEADED`
 - `--webgpu`
 - `AGENT_BROWSER_WEBGPU`
+- `--no-webmcp`
+- `AGENT_BROWSER_NO_WEBMCP`
+- `noWebmcp`
 - `AGENT_BROWSER_NO_XVFB`
 - `"webgpu": true`
-- `--cdp <port>`
+- `--cdp <port|url>`
 - `--color-scheme <scheme>`
 - `AGENT_BROWSER_COLOR_SCHEME`
 - `--download-path <path>`
@@ -1500,10 +1610,16 @@ This generated block is review data for maintainers. The human-authored referenc
 - skills list: `slack`
 - skills list: `dogfood`
 - skills list: `vercel-sandbox`
+- skills list: `protected-vercel-deployments`
 - skills list: `agentcore`
 - skills list: `derive-client`
+- skills list: `webmcp-gen`
+- WebMCP generation skill full: `webmcp.init.js`
+- WebMCP generation skill full: `agent-browser webmcp invoke <tool> --params @fixture.json`
 - vercel sandbox skill full: `@agent-browser/sandbox`
 - vercel sandbox skill full: `installSystemDependencies: false`
+- protected Vercel deployments skill full: `x-vercel-trusted-oidc-idp-token`
+- protected Vercel deployments skill full: `vc project token`
 - core skill full: `agent-browser frame @e3`
 - core skill full: `agent-browser dialog accept`
 - core skill full: `agent-browser --session "$SESSION" --restore open https://app.example.com`
@@ -1634,6 +1750,13 @@ This generated block is review data for maintainers. The human-authored referenc
 - root help: `cookies [get|set|clear]`
 - root help: `cookies set --curl <file>`
 - root help: `storage <local|session>`
+- root help: `webmcp list`
+- root help: `webmcp invoke <tool>`
+- root help: `--params <json|@file>`
+- root help: `--frame <frame-id>`
+- root help: `--detach`
+- root help: `webmcp result <id>`
+- root help: `webmcp cancel <id>`
 - root help: `diff snapshot`
 - root help: `diff screenshot --baseline`
 - root help: `trace start`
@@ -1693,6 +1816,9 @@ This generated block is review data for maintainers. The human-authored referenc
 - root help: `deny <id>`
 - root help: `chat <message>`
 - root help: `dashboard start --port <n>`
+- root help: `dashboard start --allowed-origins <origins>`
+- dashboard help: `--allowed-origins <origins>`
+- dashboard help: `AGENT_BROWSER_DASHBOARD_ALLOWED_ORIGINS`
 - device help: `device list`
 - root help: `install --with-deps`
 - install help: `fails if deps fail`
@@ -1772,6 +1898,10 @@ This generated block is review data for maintainers. The human-authored referenc
 - root help: `NO_PROXY`
 - root help: `--ignore-https-errors`
 - root help: `AGENT_BROWSER_IGNORE_HTTPS_ERRORS`
+- root help: `--ca-cert <path>`
+- root help: `--no-ca-cert`
+- root help: `AGENT_BROWSER_CA_CERT`
+- root help: `AGENT_BROWSER_CLEAR_CA_CERT`
 - root help: `--allow-file-access`
 - root help: `AGENT_BROWSER_ALLOW_FILE_ACCESS`
 - root help: `--hide-scrollbars <bool>`
@@ -1779,7 +1909,9 @@ This generated block is review data for maintainers. The human-authored referenc
 - root help: `AGENT_BROWSER_HEADED`
 - root help: `--webgpu`
 - root help: `AGENT_BROWSER_WEBGPU`
-- root help: `--cdp <port>`
+- root help: `--no-webmcp`
+- root help: `AGENT_BROWSER_NO_WEBMCP`
+- root help: `--cdp <port|url>`
 - root help: `--color-scheme <scheme>`
 - root help: `AGENT_BROWSER_COLOR_SCHEME`
 - root help: `--download-path <path>`

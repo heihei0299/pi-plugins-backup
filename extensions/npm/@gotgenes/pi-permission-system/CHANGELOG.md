@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [31.1.1](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v31.1.0...pi-permission-system-v31.1.1) (2026-09-05)
+
+
+### Documentation
+
+* **pi-permission-system:** record the directory vocabulary and mark Phase 14 Step 13 ([72a3c0d](https://github.com/gotgenes/pi-packages/commit/72a3c0d83eed5489874d93404f4277797e193649)), closes [#837](https://github.com/gotgenes/pi-packages/issues/837)
+
+## [31.1.0](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v31.0.2...pi-permission-system-v31.1.0) (2026-09-04)
+
+
+### Features
+
+* **pi-permission-system:** record every change to the effective tool surface in the debug log ([bf0331a](https://github.com/gotgenes/pi-packages/commit/bf0331a26ace5dcee7f6a26064af1251fecaaa41))
+
+### Bug Fixes
+
+* **pi-permission-system:** restore a tool when its deny rule is relaxed mid-session ([190a25e](https://github.com/gotgenes/pi-packages/commit/190a25eccdcd5101badf6266f10142c809296983))
+* **pi-permission-system:** forget a withheld tool that pi has unregistered ([404d819](https://github.com/gotgenes/pi-packages/commit/404d8194f9763ee8a228bd36176c5adbb944464c)), closes [#873](https://github.com/gotgenes/pi-packages/issues/873)
+
+### Documentation
+
+* **pi-permission-system:** document the tool-surface baseline ([0997065](https://github.com/gotgenes/pi-packages/commit/09970655c60bfe14c5a38b986301c480ed19f316))
+
+## [31.0.2](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v31.0.1...pi-permission-system-v31.0.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **pi-permission-system:** prompt on a bash command whose parse could not be resolved ([2665c21](https://github.com/gotgenes/pi-packages/commit/2665c21f483bdaf57cb54826f8e19a1a8da493f3)), closes [#840](https://github.com/gotgenes/pi-packages/issues/840)
+
+### Documentation
+
+* **pi-permission-system:** record the fail-closed floor for an unresolved parse ([33fd390](https://github.com/gotgenes/pi-packages/commit/33fd390106bcae9ed6df324f36b3cf7e01f5e5a7)), closes [#840](https://github.com/gotgenes/pi-packages/issues/840)
+
 ## [31.0.1](https://github.com/gotgenes/pi-packages/compare/pi-permission-system-v31.0.0...pi-permission-system-v31.0.1) (2026-09-03)
 
 
