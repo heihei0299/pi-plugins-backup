@@ -9,6 +9,44 @@ export interface ToolRegistry {
   setActive(names: string[]): void;
 }
 
+/** Tool names and their guideline bullets, read from one pass over a registry. */
+export interface RegisteredTools {
+  /** Resolvable tool names, in registry order. */
+  readonly names: string[];
+  /** Guideline bullets per tool; a tool declaring none has no entry. */
+  readonly guidelinesByTool: ReadonlyMap<string, readonly string[]>;
+}
+
+/**
+ * Read a registry listing once, yielding both the answers this package needs.
+ *
+ * `getActive()` returns bare names and `getAll()` returns `ToolInfo` records,
+ * so both are accepted: a listing carrying no guidelines simply produces an
+ * empty map.
+ */
+export function readRegisteredTools(
+  tools: readonly unknown[],
+): RegisteredTools {
+  const names: string[] = [];
+  const guidelinesByTool = new Map<string, readonly string[]>();
+
+  for (const tool of tools) {
+    const name = getToolNameFromValue(tool);
+    if (!name) {
+      continue;
+    }
+
+    names.push(name);
+
+    const guidelines = getToolPromptGuidelinesFromValue(tool);
+    if (guidelines.length > 0) {
+      guidelinesByTool.set(name, guidelines);
+    }
+  }
+
+  return { names, guidelinesByTool };
+}
+
 export type ToolRegistrationCheckResult =
   | {
       status: "missing-tool-name";
@@ -96,6 +134,35 @@ export function getToolNameFromValue(value: unknown): string | null {
   }
 
   return null;
+}
+
+/**
+ * The guideline bullets a registered tool contributes to the system prompt.
+ *
+ * Pi carries them per tool on `ToolInfo.promptGuidelines` and flattens them
+ * into one `Guidelines:` block when it builds the prompt. Reading them per tool
+ * is what lets this package rebuild that block for the allowed set alone,
+ * rather than matching Pi's rendered sentences by literal text.
+ *
+ * Kept defensively wide, like {@link getToolNameFromValue}: anything that is
+ * not a non-empty string is dropped, and a value that is not an array of them
+ * yields no guidelines rather than throwing.
+ */
+export function getToolPromptGuidelinesFromValue(value: unknown): string[] {
+  const guidelines = toRecord(value).promptGuidelines;
+  if (!Array.isArray(guidelines)) {
+    return [];
+  }
+
+  const bullets: string[] = [];
+  for (const entry of guidelines) {
+    const bullet = getNonEmptyString(entry);
+    if (bullet) {
+      bullets.push(bullet);
+    }
+  }
+
+  return bullets;
 }
 
 export function checkRequestedToolRegistration(

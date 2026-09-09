@@ -1,6 +1,73 @@
 # Changelog
 
-## Unreleased
+## 0.6.10 - 2026-09-08
+
+### Fixed
+
+- Follow native artifact operands and raw-batch precedence consistently in preflight, recording reservations, result metadata and timeout recovery. Preserve literal batch operands and replay retries as a single native row (#168).
+- Handle recording `--fps` options without losing the requested path or intended pinned page. Keep conservative start/ref protection for older supported natives without claiming a page replacement; FPS-only restarts keep refs (#169).
+- Show positive native WebMCP availability in navigation summaries and distinguish current recording dependency checks from older deferred failures (#169).
+
+### Changed
+
+- Recommend `agent-browser` 0.37.0 while keeping the stable 0.35.0 minimum, no upper cap and native-owned recording/tab setup.
+
+### Known limitations
+
+- Native 0.37 short/cold recordings on Ubuntu can still fail or produce a shorter clip. This release does not change the upstream recording engine.
+
+## 0.6.9 - 2026-09-08
+
+### Fixed
+
+- Include redacted stdout/stderr tails in failed Electron startup diagnostics and visible errors (#128). Capture uses private regular files inside the isolated profile, with the last 4096 bytes read per stream; this is not a lifetime disk limit. Preserve the profile and logs when failed-startup process cleanup cannot finish, without changing normal quit cleanup.
+
+- Restore ordinary browser access to a tracked Electron app after Pi reload or resume by checking its live debug endpoint and the named upstream connection. Keep the app, profile, and session intact; unrelated or replaced connections still fail verification.
+
+### Validation
+
+- Verified startup output, reload continuity and quit cleanup with genuine Electron through the official Pi SDK on native macOS and Ubuntu. Native Windows was waived and not run; permanent release gates are unchanged.
+
+## 0.6.8 - 2026-09-07
+
+### Fixed
+
+- Add session- and namespace-aware `inspect-overlay-state` recovery for direct, semantic, raw `find` (including `nth` and default-click), and batched/job clicks that upstream rejects because another element covers the target's click point. These failures remain `upstream-error`; the wrapper recommends refreshing refs for inspection without retrying the blocked click or guessing a dismiss control. Thanks to @MDGChamomile for #147.
+
+- Replace Windows PowerShell argument forwarding with `cross-spawn` at the shared process boundary, preserving empty operands, literal doublequotes, the selected `PATH` shim and upstream architecture selection. Remove command reordering and the old empty-argument/namespace workarounds; POSIX keeps native Node `spawn`. Thanks to @MaartenDMT (#109) and @dagve11 (#134) for their reports and proposed fixes.
+
+### Documentation
+
+- Clarify that recording destinations are reserved within one Pi process; concurrent processes must use unique paths because different sessions can overwrite the same file (#110).
+
+### Validation
+
+- Retain runnable Windows argv and failure/lifecycle contracts in the local and platform-target gates. Native macOS and Ubuntu validate the POSIX process path; PowerShell Legacy diagnostics reproduced both old corruptions but do not validate the replacement Windows transport. Native Windows/`cmd.exe` was unavailable and was not run under the task-specific waiver; permanent release requirements remain intact.
+
+## 0.6.7 - 2026-09-07
+
+### Fixed
+
+- Remove four unused prompt suffix entries without changing runtime guidance. Thanks to @JsonKim for #133.
+- Diagnose misplaced Chromium `--no-sandbox` command/navigation options with effective top-level `--args` guidance, while preserving literal operands and help. Adapted from @ahalekelly's #152.
+- Correct Electron list timeout guidance, label explicit-ID cleaned launch records as historical, and report fresh tracked-profile path presence independently of process/port liveness. Failed-launch output capture remains unresolved (#128).
+- Return structured artifact-directory preparation failures for direct, stdin and raw batch commands, retaining the attempted path and recovery guidance. Document absolute artifact paths for raw batches without rewriting their command strings (#124).
+- Identify image media types and inline attachments from bytes instead of filename suffixes, distinguish known requested and reported artifact paths, and surface fresh-snapshot warnings for reached recording page transitions on success and failure (#127).
+- Accept native `upgrade` text without reporting a JSON parse failure, retain failure diagnostics and explicit `--json` output, and keep timeout/cancellation failures even when the child exits zero. Thanks to @fgpaz for the report and regression approach in #156.
+- Clarify positional screenshot and recording paths, the screenshot `--full` flag, batch stdin's JSON token-array format, text-only `job.assertText`, ref refreshes after clicks, focused `keyboard type <text>`, and positional `wait <ms>` in tool guidance.
+- Stop using duplicate-name snapshot ordinals as click-failure evidence after the page changes. Ambiguous refs pass through to native clicking without a probe; unique targets retain no-event checks, and native dispatch still does not prove application state.
+- Accept an unmapped owner for the operating environment's actual filesystem root when validating private socket storage in Linux user namespaces. Preserve non-root ownership, permissions, alias-destination and entry checks, including existing root-owned sticky modes; automatic restore still rejects unmapped non-root HOME ancestry.
+- Let URL-opening QA clear diagnostics and navigate even when the previous tab is gone. Explicit URL reads, URL accessibility/vitals audits, URL diffs, new windows and URL-bearing recording commands also keep their own destination in direct and batch calls; attached QA and current-page actions still require the intended page.
+- Retain a resumed managed session's pending URL reopen after confirmed shutdown, even when non-page calls start the daemon first or a batch begins with non-page steps. Reopen the complete URL, including its fragment, before current-page reads or history commands; verify the observed tab and discard old refs/frame scope. Unreached batch navigation does not consume the reopen, and native row/error order is unchanged. Restored cookies/storage do not recover unsaved forms, JavaScript memory, or history; live wrong-tab recovery and explicit navigation keep their own intent.
+- Keep follow-ups on the observed page after `window new` or `diff url`, including redirected destinations and reached native batch rows. Do not reselect the old tab for an intentional blank window or an observed blank diff destination; invalidate old refs and require a verified target when the final URL cannot be observed.
+- Preserve the consumed cold-reopen marker and exact session identity in aborted results, so cancellation after an attempted reopen cannot navigate a live browser again after reload. Cancellation before the attempt leaves the reopen pending.
+- Require observed successful page results in lifecycle verification and report the first unexpected completed tool result instead of accepting recovery text or waiting for a later result.
+
+- Preserve native arguments, literal values, refs, and continue-on-error behavior during tab recovery. Failed tab selection stops before user commands; mixed batch failures retain their per-step results and failure counts.
+- Apply stale-ref checks to `@eN`, `eN`, and `ref=eN` selector operands without treating text, paths, or keyboard/mouse data as refs. Explain unsupported `batch --bail=<value>` without running ignored stdin.
+- Retry failed recording journal writes, preserve closed recording state across branch changes and reloads, require absolute stored recording paths, and target cleanup to the exact session and namespace. Preserve the selected managed-session namespace and automatic restore when ambient namespace settings change.
+- Limit `semanticAction.values` to select actions in the tool schema and clarify the supported `stdin` commands. Valid semantic calls are unchanged; runtime validation still applies. Thanks to @lindsayemarc for #139.
+- Check socket-directory ancestry through root-owned symlinks, rejecting unsafe destination parents and intermediate user-owned links while preserving trusted system aliases.
 
 ## 0.6.6 - 2026-09-05
 

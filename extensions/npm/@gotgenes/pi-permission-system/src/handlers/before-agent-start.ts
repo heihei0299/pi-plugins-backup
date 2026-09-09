@@ -3,12 +3,13 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { resolveSkillPromptEntries } from "#src/exposure/skill-prompt-sanitizer";
-import { sanitizeAvailableToolsSection } from "#src/exposure/system-prompt-sanitizer";
 import {
-  getToolNameFromValue,
+  type RegisteredTools,
+  readRegisteredTools,
   type ToolRegistry,
 } from "#src/exposure/tool-registry";
 import type { ToolSurfaceObservation } from "#src/exposure/tool-surface-baseline";
+import { renderToolSurface } from "#src/exposure/tool-surface-prompt";
 import type { DebugLogger } from "#src/logging/session-logger";
 import type { PermissionResolver } from "#src/policy/permission-resolver";
 import type { PermissionSession } from "#src/session/permission-session";
@@ -17,6 +18,14 @@ import type { TurnPreparation } from "./session-turn-prep";
 /** Minimal subset of BeforeAgentStartEvent used by this handler. */
 interface BeforeAgentStartPayload {
   systemPrompt: string;
+  /**
+   * The parts Pi assembled the prompt from. `toolSnippets` is what lets this
+   * handler render the session's own tool list instead of editing the one Pi
+   * wrote — including in a child, whose inherited identity carries none.
+   */
+  systemPromptOptions?: {
+    toolSnippets?: Record<string, string>;
+  };
 }
 
 /**
@@ -39,8 +48,12 @@ export function shouldExposeTool(
  *
  * Recomputes the active tool set and the returned system-prompt override on
  * every fire (no memoization): the override must be returned each turn so that
- * skill filtering is reapplied and the wire prompt stays byte-stable, rather
- * than letting Pi reset to its skill-unfiltered base prompt on a cache hit.
+ * skill filtering is reapplied and the wire prompt stays stable across turns,
+ * rather than letting Pi reset to its skill-unfiltered base prompt on a cache
+ * hit.
+ *
+ * The tool surface is relocated rather than edited in place, so a subagent
+ * child's inherited identity stays byte-identical to its parent's (#890).
  *
  * Constructor deps:
  * - `turnPrep` — brings the node up to date for the turn before anything reads
@@ -70,8 +83,9 @@ export class AgentPrepHandler {
     this.turnPrep.prepare(ctx);
 
     const agentName = this.session.resolveAgentName(ctx, event.systemPrompt);
+    const registered = readRegisteredTools(this.toolRegistry.getAll());
     const surface = this.session.resolveExposedTools(
-      this.observeToolSurface(),
+      this.observeToolSurface(registered),
       (toolName) =>
         shouldExposeTool(toolName, agentName, (t, a) =>
           this.resolver.isToolFullyDenied(t, a),
@@ -88,12 +102,13 @@ export class AgentPrepHandler {
       });
     }
 
-    const toolPromptResult = sanitizeAvailableToolsSection(
-      event.systemPrompt,
+    const toolSurfacePrompt = renderToolSurface(event.systemPrompt, {
       allowedTools,
-    );
+      toolSnippets: event.systemPromptOptions?.toolSnippets ?? {},
+      guidelinesByTool: registered.guidelinesByTool,
+    });
     const skillPromptResult = resolveSkillPromptEntries(
-      toolPromptResult.prompt,
+      toolSurfacePrompt,
       this.resolver,
       agentName,
       this.session.getPathNormalizer(),
@@ -104,21 +119,12 @@ export class AgentPrepHandler {
       : {};
   }
 
-  private observeToolSurface(): ToolSurfaceObservation {
+  private observeToolSurface(
+    registered: RegisteredTools,
+  ): ToolSurfaceObservation {
     return {
-      active: toolNamesOf(this.toolRegistry.getActive()),
-      registered: new Set(toolNamesOf(this.toolRegistry.getAll())),
+      active: readRegisteredTools(this.toolRegistry.getActive()).names,
+      registered: new Set(registered.names),
     };
   }
-}
-
-function toolNamesOf(tools: readonly unknown[]): string[] {
-  const names: string[] = [];
-  for (const tool of tools) {
-    const toolName = getToolNameFromValue(tool);
-    if (toolName) {
-      names.push(toolName);
-    }
-  }
-  return names;
 }

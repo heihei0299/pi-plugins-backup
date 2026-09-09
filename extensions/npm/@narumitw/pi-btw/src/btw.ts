@@ -204,6 +204,13 @@ function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function readBtwSessionId(ctx: ExtensionCommandContext): string | undefined {
+	const getSessionId = ctx.sessionManager.getSessionId;
+	if (typeof getSessionId !== "function") return undefined;
+	const sessionId = getSessionId.call(ctx.sessionManager);
+	return sessionId.length > 0 ? sessionId : undefined;
+}
+
 function notifySafely(
 	ctx: ExtensionCommandContext,
 	message: string,
@@ -216,6 +223,9 @@ function notifySafely(
 	}
 }
 
+// Keep this slightly-over-1,000-line command coordinator intact: its injectable menu,
+// request, resume, and delivery flows share the same thread-state and test seams;
+// settings, keybinding policy, terminal ownership, and rendering live in separate modules.
 export interface BtwExtensionDependencies {
 	showCommandMenu?: (
 		pi: ExtensionAPI,
@@ -342,7 +352,10 @@ export default function btw(pi: ExtensionAPI, dependencies: BtwExtensionDependen
 							ctx: fullscreenCtx,
 						});
 					},
-					{ copyOnSelect: effectiveFullscreenCopyOnSelect(settings) },
+					{
+						copyOnSelect: effectiveFullscreenCopyOnSelect(settings),
+						...(settings.keybindings ? { keybindings: settings.keybindings } : {}),
+					},
 				);
 			} finally {
 				if (state?.title && state.thread.turns.length > 0) {
@@ -895,6 +908,7 @@ async function askThreadQuestion(
 				auth: selected.auth,
 				signal: view.signal,
 				completeSimple: createModelRegistryCompleteSimple(ctx.modelRegistry),
+				sessionId: readBtwSessionId(ctx),
 			}).then((result) => {
 				if (settled) return;
 				settled = true;

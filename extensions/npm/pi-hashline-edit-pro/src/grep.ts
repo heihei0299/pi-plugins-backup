@@ -7,17 +7,23 @@ import { spawn, spawnSync } from "child_process";
 import { createInterface } from "readline";
 import { tryReadNormFile } from "./file-reader";
 import { MAX_HASH_LINES, fmtRow, HASH_LEN, HASH_SEP } from "./hashline";
-import { MAX_GREP_LINE_BYTES } from "./constants";
+import { ANCHOR_POOL_EXHAUSTED_PREFIX, MAX_GREP_LINE_BYTES } from "./constants";
 import { toCwd } from "./paths";
 import { loadP, loadGuide } from "./prompts";
 import { normReq } from "./payload-contract";
-import { recordServedSafe, buildServedMap } from "./served";
 import { abortIf, errCode, isRec, makePrepareArguments, rejectUnknownFields, truncateToBytes, visLines } from "./utils";
-
+import { markServed as markServedScoped } from "./anchor-registry";
+import { buildServedMap } from "./served";
+import { Text } from "@earendil-works/pi-tui";
+import { expandHint, getResultText, reuseText, type CallT, type FgT } from "./replace-render";
 const GREP_KS = new Set(["pattern", "path", "glob", "context", "ignoreCase", "literal", "limit"]);
 
 function cmp(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function isPoolExhaustedError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith(ANCHOR_POOL_EXHAUSTED_PREFIX);
 }
 
 export interface GrepReq {
@@ -448,6 +454,79 @@ const grepToolSchema = Type.Object(
   { additionalProperties: false },
 );
 
+
+const GREP_PREVIEW_LINES = 16;
+const GREP_PREVIEW_LINES_EXPANDED = 40;
+
+export function fmtGrepCall(args: { pattern?: unknown; path?: unknown; glob?: unknown; literal?: unknown; ignoreCase?: unknown; context?: unknown; limit?: unknown } | undefined, theme: CallT): string {
+  const pattern = typeof args?.pattern === "string" && args.pattern.length > 0 ? theme.fg("accent", args.pattern) : theme.fg("toolOutput", "...");
+  const qualifiers: string[] = [];
+  if (typeof args?.path === "string" && args.path.length > 0) qualifiers.push(args.path);
+  if (typeof args?.glob === "string" && args.glob.length > 0) qualifiers.push(args.glob);
+  if (args?.literal === true) qualifiers.push("literal");
+  if (args?.ignoreCase === true) qualifiers.push("case-insensitive");
+  if (typeof args?.context === "number") qualifiers.push(`context ${args.context}`);
+  if (typeof args?.limit === "number") qualifiers.push(`limit ${args.limit}`);
+  let text = `${theme.fg("toolTitle", theme.bold("anchor_grep"))} ${pattern}`;
+  if (qualifiers.length > 0) text += ` ${theme.fg("dim", qualifiers.join(" "))}`;
+  return text;
+}
+
+function highlightRegex(args: unknown): RegExp | undefined {
+  if (!isRec(args) || typeof args.pattern !== "string" || args.pattern.length === 0) return undefined;
+  try {
+    const validated = buildRegex(args.pattern, args.literal === true, args.ignoreCase === true);
+    return new RegExp(validated.source, validated.flags.includes("i") ? "giu" : "gu");
+  } catch {
+    return undefined;
+  }
+}
+
+function highlightMatches(text: string, regex: RegExp, theme: FgT): string {
+  let out = "";
+  let last = 0;
+  regex.lastIndex = 0;
+  for (;;) {
+    const match = regex.exec(text);
+    if (!match || match[0].length === 0) break;
+    out += text.slice(last, match.index) + theme.fg("accent", match[0]);
+    last = match.index + match[0].length;
+  }
+  return out + text.slice(last);
+}
+
+const ANCHORED_ROW_RE = /^[A-Za-z0-9]{4}│/;
+
+function highlightHitRow(row: string, highlight: RegExp, theme: FgT): string {
+  const anchored = row.match(ANCHORED_ROW_RE);
+  if (!anchored) return highlightMatches(row, highlight, theme);
+  return anchored[0] + highlightMatches(row.slice(anchored[0].length), highlight, theme);
+}
+
+function styleGrepLine(line: string, highlight: RegExp | undefined, theme: FgT): string {
+  if (line.startsWith("=== ")) return theme.fg("accent", line);
+  if (line.startsWith("[grep:") || line.startsWith("... ")) return theme.fg("dim", line);
+  if (!highlight) return line;
+  const gutter = line.indexOf(" │ ");
+  if (gutter < 0) return highlightHitRow(line, highlight, theme);
+  const cut = gutter + " │ ".length;
+  return line.slice(0, cut) + highlightHitRow(line.slice(cut), highlight, theme);
+}
+
+export function renderGrepResult(result: { content?: Array<{ type: string; text?: string }> }, options: { isPartial: boolean; expanded?: boolean } | boolean, theme: FgT, context: any): Text {
+  const isPartial = typeof options === "boolean" ? options : options.isPartial;
+  const expanded = typeof options === "boolean" ? context.expanded === true : options.expanded === true || context.expanded === true;
+  if (isPartial) return reuseText(context, theme.fg("warning", "Searching..."));
+  const raw = getResultText(result);
+  if (context.isError) return raw ? reuseText(context, `\n${theme.fg("error", raw)}`) : new Text("", 0, 0);
+  if (!raw) return new Text("", 0, 0);
+  const maxLines = expanded ? GREP_PREVIEW_LINES_EXPANDED : GREP_PREVIEW_LINES;
+  const lines = raw.split("\n");
+  const highlight = highlightRegex((context as { args?: unknown }).args);
+  const shown = lines.slice(0, maxLines).map((line) => styleGrepLine(line, highlight, theme));
+  if (lines.length > maxLines) shown.push(theme.fg("muted", `... ${lines.length - maxLines} more grep lines (${expandHint()})`));
+  return reuseText(context, shown.join("\n"));
+}
 export function regGrep(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "anchor_grep",
@@ -458,6 +537,14 @@ export function regGrep(pi: ExtensionAPI): void {
     prepareArguments: makePrepareArguments(),
     parameters: grepToolSchema,
     executionMode: "sequential",
+    renderCall(args: any, theme: CallT, context: any) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      text.setText(fmtGrepCall(args as { pattern?: unknown; path?: unknown } | undefined, theme));
+      return text;
+    },
+    renderResult(result, opts, theme, context) {
+      return renderGrepResult(result as never, opts as { isPartial: boolean; expanded?: boolean }, theme as never, context as never);
+    },
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const canonical = normReq(params);
@@ -491,6 +578,16 @@ export function regGrep(pi: ExtensionAPI): void {
       let truncatedBy: "lines" | "bytes" | null = null;
       let linesReplaced = 0;
       let countOnly = false;
+      let poolSkipped = 0;
+      const readGrepFile = async (absPath: string) => {
+        try {
+          return await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, allocation: "real", signal });
+        } catch (error) {
+          if (!isPoolExhaustedError(error)) throw error;
+          poolSkipped += 1;
+          return undefined;
+        }
+      };
       const rgMatches = await collectRgMatches(rgPath, req.pattern, base, req, signal);
       const sortedFiles = [...rgMatches.keys()].sort(cmp);
       for (let f = 0; f < sortedFiles.length; f++) {
@@ -506,7 +603,7 @@ export function regGrep(pi: ExtensionAPI): void {
             const globPath = relative(globRoot, absPath).replace(/\\/g, "/");
             if (!globRegex.test(globPath) && !globRegex.test(displayPath)) continue;
           }
-          const norm = await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, signal });
+          const norm = await readGrepFile(absPath);
           if (!norm) continue;
           const hit = makeHitFromIndices(norm, relative(ctx.cwd, absPath).replace(/\\/g, "/"), indices, context, validatedRegex, totalForFile, indices.length);
           const display = displayRowsForHit(hit);
@@ -532,7 +629,7 @@ export function regGrep(pi: ExtensionAPI): void {
           const globPath = relative(globRoot, absPath).replace(/\\/g, "/");
           if (!globRegex.test(globPath) && !globRegex.test(displayPath)) continue;
         }
-        const norm = await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, signal });
+        const norm = await readGrepFile(absPath);
         if (!norm) continue;
         const hit = makeHitFromIndices(norm, relative(ctx.cwd, absPath).replace(/\\/g, "/"), indices, context, validatedRegex, totalForFile, Math.min(totalForFile, remaining));
         if (!hit) continue;
@@ -571,8 +668,7 @@ export function regGrep(pi: ExtensionAPI): void {
       }
       hits.sort((a, b) => cmp(a.displayPath, b.displayPath));
       for (const hit of hits) {
-        const servedMap = buildServedMap(hit.fileHashes, hit.fileLines, hit.hashes);
-        await recordServedSafe(hit.path, servedMap, "anchor_grep", new Set(hit.fileHashes));
+        markServedScoped(hit.path, buildServedMap(hit.fileHashes, hit.fileLines, hit.hashes), new Set(hit.fileHashes));
       }
       const blocks = hits
         .map((hit) => `=== ${hit.displayPath} ===\n${hit.rows.join("\n")}`)
@@ -581,6 +677,7 @@ export function regGrep(pi: ExtensionAPI): void {
       if (rowTruncated) notes.push(`[grep: output truncated at ${DEFAULT_MAX_LINES} rows or ${formatSize(DEFAULT_MAX_BYTES)}; refine the pattern to see more.]`);
       if (limitTruncated) notes.push(`[grep: showing first ${limit} matches; increase limit to see more.]`);
       if (linesReplaced > 0) notes.push(`[grep: ${linesReplaced} line(s) exceed ${formatSize(MAX_GREP_LINE_BYTES)} and are shown as truncated fragments; use read to see the full lines.]`);
+      if (poolSkipped > 0) notes.push(`[grep: ${poolSkipped} file(s) skipped because the session's anchor pool is exhausted; free anchors with /clear-anchors or narrow the search.]`);
       const truncated = limitTruncated || rowTruncated;
       const truncation: TruncationResult | undefined = rowTruncated
         ? {
@@ -597,7 +694,11 @@ export function regGrep(pi: ExtensionAPI): void {
             maxBytes: DEFAULT_MAX_BYTES,
           }
         : undefined;
-      const text = blocks.length > 0 ? `${blocks}${notes.length > 0 ? `\n${notes.join("\n")}` : ""}` : "No matches found.";
+      const text = blocks.length > 0
+        ? `${blocks}${notes.length > 0 ? `\n${notes.join("\n")}` : ""}`
+        : notes.length > 0
+          ? `No matches found.\n${notes.join("\n")}`
+          : "No matches found.";
       return {
         content: [{ type: "text", text }],
         details: {

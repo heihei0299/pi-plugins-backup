@@ -14,19 +14,17 @@ import { readNormFile, safeSnapId } from "./file-reader";
 import { lineHashes, fmtRegion, fmtRow, HASH_SEP, MAX_HASH_LINES } from "./hashline";
 import { toCwd } from "./paths";
 import { abortIf, makePrepareArguments, numberedRead, visLines, splitLines } from "./utils";
-import { recordServedSafe, buildServedMap } from "./served";
 import { loadP, loadGuide } from "./prompts";
+import { withReadPrompts, DEFAULT_EDIT_FLAGS, type EditToolFlags } from "./edit-common";
 import { valAccess } from "./validation";
+import { markServed as markServedScoped } from "./anchor-registry";
+import { buildServedMap } from "./served";
 import { Text } from "@earendil-works/pi-tui";
-
 const R_DESC = loadP("../prompts/read.md");
-
 const R_SNIPPET = loadP("../prompts/read-snippet.md");
-
 function readGuide(): string[] {
-	return loadGuide("../prompts/read-guidelines.md");
+  return loadGuide("../prompts/read-guidelines.md");
 }
-
 function normPosInt(
 	value: number | undefined,
 	name: "offset" | "limit",
@@ -166,13 +164,14 @@ export async function fmtReadPreview(
 	};
 }
 
-export function regRead(pi: ExtensionAPI): void {
-	pi.registerTool({
-		name: "read",
-		label: "Read",
-		description: R_DESC,
-		promptSnippet: R_SNIPPET,
-		promptGuidelines: readGuide(),
+export function regRead(pi: ExtensionAPI, flags: EditToolFlags = DEFAULT_EDIT_FLAGS): void {
+  const prompted = withReadPrompts({ description: R_DESC, snippet: R_SNIPPET, guidelines: readGuide() }, flags);
+  pi.registerTool({
+    name: "read",
+    label: "Read",
+    description: prompted.description,
+    promptSnippet: prompted.snippet,
+    promptGuidelines: prompted.guidelines,
 		prepareArguments: makePrepareArguments(),
 		parameters: Type.Object({
 			path: Type.String({
@@ -227,6 +226,7 @@ export function regRead(pi: ExtensionAPI): void {
       const { normalized, fileHashes, hadUtf8DecodeErrors, absolutePath: resolvedPath } = await readNormFile(
         rawPath, ctx.cwd, { signal, preloadedFile: file, maxLines: MAX_HASH_LINES },
       );
+			const fileLines = splitLines(normalized);
 			const preview = await fmtReadPreview(
 				normalized,
 				{
@@ -236,9 +236,7 @@ export function regRead(pi: ExtensionAPI): void {
 				fileHashes,
 				resolvedPath,
 			);
-			const fileLines = splitLines(normalized);
-			const servedMap = buildServedMap(fileHashes, fileLines, preview.servedHashes);
-			await recordServedSafe(resolvedPath, servedMap, "read", new Set(fileHashes));
+			markServedScoped(resolvedPath, buildServedMap(fileHashes, fileLines, preview.servedHashes), new Set(fileHashes));
 			const snapshotId = await safeSnapId(absolutePath, "read");
 			const previewText =
 				hadUtf8DecodeErrors

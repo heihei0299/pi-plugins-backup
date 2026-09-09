@@ -1,8 +1,10 @@
 import { abortIf, rejectUnknownFields, firstNonEmptyIndex, lastNonEmptyIndex, clipLine, getCached } from "../utils";
-import { HASH_SEP, HASH_RUN, stripRowPrefix, canon } from "./hash";
 import { parseHashRef, parseText, type Anchor } from "./parse";
+import { HASH_SEP, stripRowPrefix, canon } from "./hash";
+import { HASH_RUN } from "./alphabet";
 import { NEW_CONTENT_NOT_ARRAY_MSG, MAX_RANGE_STALE_LINES } from "../constants";
 import { contentChecksum } from "./hasher";
+import { hashSource } from "./hash";
 
 export type RAnchor = {
 	line: number;
@@ -17,8 +19,7 @@ export type RHEdit = {
 
 interface HMismatch {
 	ref: Anchor;
-	kind: "not_found" | "ambiguous";
-	candidates?: number[];
+	kind: "not_found";
 	context?: RAnchor;
 }
 
@@ -52,13 +53,10 @@ function resAnchorFromMap(
 	if (!hashMatches || hashMatches.length === 0) {
 		return { ref, kind: "not_found" };
 	}
-	if (hashMatches.length === 1) {
-		return {
-			line: hashMatches[0]!,
-			hash: ref.hash,
-		};
-	}
-	return { ref, kind: "ambiguous", candidates: hashMatches };
+	return {
+		line: hashMatches[0]!,
+		hash: ref.hash,
+	};
 }
 
 function assertAligned(
@@ -96,12 +94,11 @@ export function fmtMismatchWithHashes(
   const out: string[] = [];
   const hashes: string[] = [];
   const servedMap = new Map<string, string>();
-  const notFound = mismatches.filter((m) => m.kind === "not_found");
-  const ambiguous = mismatches.filter((m) => m.kind === "ambiguous");
-  const refList = notFound.map((m) => `"${m.ref.hash}"`).join(", ");
+  const notFound = mismatches;
   if (notFound.length > 0) {
+    const refList = notFound.map((m) => `"${m.ref.hash}"`).join(", ");
     out.push(
-      `[E_STALE_ANCHOR] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. The file changed since read. Call read() for fresh anchors.`
+      `[E_STALE_ANCHOR] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. The file changed since read. Call read()${filePath ? ` on ${filePath}` : ""} for fresh anchors.`
     );
     for (const m of notFound) {
       const ctx = m.context;
@@ -113,39 +110,11 @@ export function fmtMismatchWithHashes(
         const h = fileHashes[ln - 1]!;
         const c = fileLines[ln - 1] ?? "";
         hashes.push(h);
-        servedMap.set(h, contentChecksum(c));
+        servedMap.set(h, contentChecksum(hashSource(c)));
         rows.push(`    ${ln}: ${h}│${clipLine(c)}`);
       }
       out.push("");
       out.push(`  Current context around resolved anchor "${ctx.hash}" (line ${ctx.line}):\n${rows.join("\n")}`);
-    }
-  }
-  if (ambiguous.length > 0) {
-    if (out.length > 0) out.push("");
-    out.push(
-      `[E_AMBIGUOUS_ANCHOR] ${ambiguous.length} ambiguous anchor${ambiguous.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}. Call read() for fresh anchors.`
-    );
-    for (const m of ambiguous) {
-      const sample = (m.candidates ?? []).slice(0, 5);
-      const more =
-        (m.candidates?.length ?? 0) > sample.length
-          ? `, ... (+${(m.candidates?.length ?? 0) - sample.length} more)`
-          : "";
-      for (const line of sample) {
-        const h = fileHashes[line - 1]!;
-        const c = fileLines[line - 1] ?? "";
-        hashes.push(h);
-        servedMap.set(h, contentChecksum(c));
-      }
-      const lines = sample
-        .map((line) => {
-          const content = clipLine(fileLines[line - 1] ?? "");
-          return `    ${line}: ${fileHashes[line - 1]}│${content}`;
-        })
-        .join("\n");
-        out.push(
-          `  Hash "${m.ref.hash}" matches lines ${sample.join(", ")}${more}.\n${lines}`,
-        );
     }
   }
   return { text: out.join("\n"), hashes, servedMap };
@@ -545,7 +514,7 @@ export function assertRangeServed(
     const hash = fileHashes[line - 1]!;
     const content = fileLines[line - 1]!;
     const servedContent = served?.get(hash);
-    if (servedContent === undefined || servedContent !== contentChecksum(content)) mismatchLines.push(line);
+    if (servedContent === undefined || servedContent !== contentChecksum(hashSource(content))) mismatchLines.push(line);
   }
   if (mismatchLines.length === 0) return;
   const rangeLength = endLine - startLine + 1;
@@ -557,7 +526,7 @@ export function assertRangeServed(
     const hash = fileHashes[line - 1]!;
     const content = fileLines[line - 1]!;
     shownHashes.push(hash);
-    shownMap.set(hash, contentChecksum(content));
+    shownMap.set(hash, contentChecksum(hashSource(content)));
     rows.push(fmtRow(hash, clipLine(content)));
   }
   const location = filePath ? ` in ${filePath}` : "";
@@ -568,8 +537,8 @@ export function assertRangeServed(
       : `${mismatchLines.length} of ${rangeLength} line(s) in the replaced range (lines ${startLine}-${endLine})${location} do not match`;
   const capHint =
     rangeLength > shownLength
-      ? `\n\n[The range has ${rangeLength} lines; showing the first ${shownLength}. Call read() with offset=${startLine + shownLength} to see the rest.]`
-      : "";
+      ? `\n\n[The range has ${rangeLength} lines; showing the first ${shownLength}. Call read()${filePath ? ` on ${filePath}` : ""} with offset=${startLine + shownLength} to see the rest.]`
+      : "\n\nRetry with the fresh anchors above without a read.";
   const message =
     `[E_RANGE_STALE] ${mismatchText} what was shown. Nothing was modified. Current range with fresh anchors:\n\n${rows.join("\n")}${capHint}`;
   throw new RangeStaleError(message, shownHashes, shownMap);

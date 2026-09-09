@@ -7,16 +7,23 @@ import { regGrep } from "./src/grep";
 import { regUndo, clearUndo } from "./src/replace-undo";
 import { regRead, fmtReadPreview } from "./src/read";
 import type { RMetrics } from "./src/replace-response";
+import type { ReplaceDetails } from "./src/replace";
 import { extractWarnings } from "./src/replace-render";
 import { MAX_HASH_LINES } from "./src/hashline";
 import {
   readConfig,
   toggleAutoRead,
   toggleAnchorGrep,
+  toggleRequirePath,
+  toggleStrictInput,
+  toggleBoundaryDedup,
 } from "./src/config";
-import { loadHashStore, pruneMissing } from "./src/hash-store";
-import { recordServedSafe, clearServed, buildServedMap } from "./src/served";
+import { loadHashStore, persistSnapshot, pruneMissing } from "./src/hash-store";
+import { initRegistry, gcRegistrySidecars, clearRegistry, freeAnchors, markServed as markServedScoped } from "./src/anchor-registry";
+import { buildServedMap } from "./src/served";
 import { clearBoundaryBypass } from "./src/boundary-bypass";
+import { currentEditFlags } from "./src/edit-common";
+import { HashlineConfigOverlay } from "./src/config-ui";
 import { registerWriteHook } from "./src/write-hook";
 import { readNormFile } from "./src/file-reader";
 import { loadFileKindAndText } from "./src/file-kind";
@@ -36,22 +43,37 @@ export default function (pi: ExtensionAPI): void {
   let autoRead = true;
   let grepWasActive = false;
 
+  async function refreshEditTools(): Promise<void> {
+    try {
+      const flags = await currentEditFlags();
+      regRead(pi, flags);
+      regReplace(pi, flags);
+      regInsert(pi, flags);
+    } catch (error) {
+      console.error("Failed to refresh edit tools:", error);
+    }
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     const active = pi.getActiveTools();
     grepWasActive = active.includes("grep");
     pi.setActiveTools(active.filter((t) => t !== "edit"));
     await initHasher();
     loadHashStore()
-      .then(store =>
-        pruneMissing(store).catch(err => {
-          console.error("Failed to prune hash store:", err);
-        }),
-      )
+      .then(async store => {
+        const missing = await pruneMissing(store);
+        for (const path of missing) freeAnchors(path);
+      })
       .catch(err => {
         console.error("Failed to load hash store:", err);
       });
+    const sessionManager = (ctx as { sessionManager?: { getSessionFile?: () => string | undefined } }).sessionManager;
+    const sessionFile = sessionManager?.getSessionFile?.();
+    await initRegistry(sessionFile);
+    await gcRegistrySidecars();
     const config = await readConfig();
     autoRead = config.autoRead;
+    await refreshEditTools();
     pi.setActiveTools(
       pi.getActiveTools().filter((t) =>
         config.anchorGrepEnabled ? t !== "grep" : t !== "anchor_grep",
@@ -63,30 +85,47 @@ export default function (pi: ExtensionAPI): void {
     }
   });
 
-  pi.registerCommand("toggle-auto-read", {
-    description: "Toggle auto-read anchors after write and post-edit diffs after replace, insert, and undo_last_change",
+  pi.registerCommand("hashline-config", {
+    description: "Open the hashline settings window (auto-read, grep, path, strict input, dedup)",
     handler: async (_args, ctx) => {
-      autoRead = await toggleAutoRead();
-      const state = autoRead ? "enabled" : "disabled";
-      ctx.ui.notify(`Auto-read anchors after write and post-edit diffs after replace/undo: ${state}`, "info");
+      if (!ctx.hasUI) {
+        ctx.ui.notify("/hashline-config requires interactive mode", "error");
+        return;
+      }
+      await ctx.ui.custom<void>(async (tui, theme, _keybindings, done) => {
+        const overlay = new HashlineConfigOverlay({
+          tui,
+          theme,
+          done,
+          onToggle: async (key) => {
+            if (key === "autoRead") autoRead = await toggleAutoRead();
+            else if (key === "anchorGrepEnabled") {
+              const enabled = await toggleAnchorGrep();
+              const active = pi.getActiveTools();
+              pi.setActiveTools(enabled ? [...new Set([...active.filter((t) => t !== "grep"), "anchor_grep"])] : [...new Set([...active.filter((t) => t !== "anchor_grep"), ...(grepWasActive ? ["grep"] : [])])]);
+            }
+            else if (key === "requirePath") await toggleRequirePath();
+            else if (key === "strictInput") await toggleStrictInput();
+            else await toggleBoundaryDedup();
+            await refreshEditTools();
+          },
+        });
+        await overlay.load();
+        return overlay;
+      }, {
+        overlay: true,
+        overlayOptions: { anchor: "center", width: "90%", minWidth: 60, maxHeight: "90%" },
+      });
     },
   });
 
-  pi.registerCommand("toggle-anchor-grep", {
-    description: "Enable or disable the anchor_grep tool (the built-in grep is disabled while anchor_grep is on)",
+  pi.registerCommand("clear-anchors", {
+    description: "Clear the session's anchor claims (path-free resolution state); anchors are re-claimed on the next read",
     handler: async (_args, ctx) => {
-      const enabled = await toggleAnchorGrep();
-      const active = pi.getActiveTools();
-      pi.setActiveTools(
-        enabled
-          ? [...new Set([...active.filter((t) => t !== "grep"), "anchor_grep"])]
-          : [...new Set([...active.filter((t) => t !== "anchor_grep"), ...(grepWasActive ? ["grep"] : [])])],
-      );
-      const state = enabled ? "enabled" : "disabled";
-      ctx.ui.notify(`anchor_grep tool ${state}`, "info");
+      clearRegistry();
+      ctx.ui.notify(`Anchor claims cleared for this session`, "info");
     },
   });
-
   pi.on("tool_result", async (event, ctx) => {
     if (event.isError) return;
 
@@ -96,10 +135,9 @@ export default function (pi: ExtensionAPI): void {
       if (typeof writtenPath === "string") {
         try {
           resolvedPath = (await resolveInCwd(writtenPath, ctx.cwd)).resolved;
+          freeAnchors(resolvedPath);
           await clearUndo(resolvedPath);
           clearBoundaryBypass(resolvedPath);
-          const store = await loadHashStore();
-          clearServed(store, resolvedPath);
         } catch (error) {
           console.error("Failed to clear undo after write:", error);
         }
@@ -123,8 +161,8 @@ export default function (pi: ExtensionAPI): void {
           DEFAULT_MAX_LINES,
         );
         const fileLines = splitLines(normalized);
-        const servedMap = buildServedMap(fileHashes, fileLines, preview.servedHashes);
-        await recordServedSafe(absolutePath, servedMap, "auto-read", new Set(fileHashes));
+        persistSnapshot(await loadHashStore(), absolutePath, normalized, fileHashes);
+        markServedScoped(absolutePath, buildServedMap(fileHashes, fileLines, preview.servedHashes), new Set(fileHashes));
         return {
           content: [
             ...(event.content ?? []),
@@ -153,7 +191,9 @@ export default function (pi: ExtensionAPI): void {
     const metrics = (event.details as { metrics?: RMetrics } | undefined)?.metrics;
     if (metrics?.classification === "noop") return;
 
-    const diff = (event.details as { diff?: string } | undefined)?.diff;
+    const toolDetails = event.details as ReplaceDetails | undefined;
+    const diff = toolDetails?.diff;
+    const detailWarnings = Array.isArray(toolDetails?.warnings) ? toolDetails.warnings.filter((w): w is string => typeof w === "string") : [];
     if (typeof diff !== "string") return;
     const hasDiff = diff.length > 0;
 
@@ -164,7 +204,7 @@ export default function (pi: ExtensionAPI): void {
       )
       .map((entry) => entry.text)
       .join("\n");
-    const warnings = extractWarnings(rendered);
+    const warnings = detailWarnings.length ? `Warnings:\n${detailWarnings.join("\n")}` : extractWarnings(rendered);
     const hint = hasDiff ? (warnings ? `${diff}\n\n${warnings}` : diff) : warnings ? `[post-edit] applied successfully; the diff is empty (whitespace-only change).\n\n${warnings}` : "[post-edit] applied successfully; the diff is empty (whitespace-only change).";
     return {
       content: [
