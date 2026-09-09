@@ -38,8 +38,8 @@ Copy:
 
 ```bash
 mkdir -p ~/.pi/agent/extensions
-cp pi-locked-subagents.ts ~/.pi/agent/extensions/
-cp locked-subagents.example.json ~/.pi/agent/locked-subagents.json
+cp pi-locked-subagents/pi-locked-subagents.ts ~/.pi/agent/extensions/
+cp pi-locked-subagents/locked-subagents.example.json ~/.pi/agent/locked-subagents.json
 ```
 
 Then edit:
