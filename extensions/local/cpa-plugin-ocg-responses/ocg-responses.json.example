@@ -1,0 +1,9 @@
+{
+  "type": "ocg-responses",
+  "api_key": "REPLACE_WITH_OPENCODE_GO_KEY",
+  "base_url": "https://opencode.ai/zen/go/v1",
+  "label": "OpenCode Go Muse 1.3",
+  "headers": {
+    "x-opencode-session": "2defdwwe"
+  }
+}
