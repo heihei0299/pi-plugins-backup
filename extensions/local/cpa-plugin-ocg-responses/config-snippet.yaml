@@ -1,0 +1,7 @@
+plugins:
+  enabled: true
+  dir: plugins
+  configs:
+    ocg-responses:
+      enabled: true
+      priority: 100
