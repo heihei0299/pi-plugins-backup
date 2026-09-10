@@ -4,6 +4,7 @@ import { DEDUP_ANCHOR } from "./constants";
 import { HASH_SEP } from "./hashline";
 import { buildChanged, buildNoop, type RMeta, type TResult } from "./replace-response";
 import { saveUndo } from "./replace-undo";
+import { getDiffContextLines } from "./config";
 import { safeSnapId } from "./file-reader";
 import { writeAtomic } from "./fs-write";
 import { servedHashesFromDiff, buildServedMap } from "./served";
@@ -27,7 +28,7 @@ export interface CommitMeta {
   onNoopDedup?: () => void;
 }
 
-function boundaryDedupWarning(count: number): string {
+export function boundaryDedupWarning(count: number): string {
   const noun = count === 1 ? "1 line" : `${count} lines`;
   const row = count === 1 ? "row" : "rows";
   return `Boundary dedup: ${noun} not added again (see ${DEDUP_ANCHOR}${HASH_SEP} ${row}).`;
@@ -127,7 +128,7 @@ export async function commitEdit(pipe: PipelineResult, meta: CommitMeta): Promis
     boundaryDedupAbove: pipe.boundaryDedupAbove,
     boundaryDedupBelow: pipe.boundaryDedupBelow,
   };
-  const changed = buildChanged(successInput, meta.verb);
+  const changed = buildChanged(successInput, meta.verb, await getDiffContextLines());
   if (changed.details.diff) {
     markServedScoped(
       mutationTargetPath,

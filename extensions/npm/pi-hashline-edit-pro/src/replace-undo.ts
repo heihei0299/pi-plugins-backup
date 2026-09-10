@@ -11,6 +11,7 @@ import { markServed as markServedScoped, freeAnchors, adoptAnchors } from "./anc
 import { resolveInCwd, writeAtomic, type FileIdentity } from "./fs-write";
 import { toLF, stripBOM, restoreEndings, type LineEnding } from "./normalize";
 import { genDiff, genPatch } from "./replace-diff";
+import { getDiffContextLines } from "./config";
 import { cntDiff, errCode, makePrepareArguments, splitLines } from "./utils";
 import { loadP, loadGuide } from "./prompts";
 import { buildMetrics } from "./replace-response";
@@ -178,13 +179,13 @@ export function regUndo(pi: ExtensionAPI): void {
         const linesAddedByReplace = cntDiff(diffResult.diff, "+");
         const linesRemovedByReplace = cntDiff(diffResult.diff, "-");
         const restoredRange = changedRange(currentNormalized, undo.content);
-        const undoDiffResult = genDiff(currentNormalized, undo.content, 1, undo.hashes, currentHashes);
+        const undoDiffResult = genDiff(currentNormalized, undo.content, await getDiffContextLines(), undo.hashes, currentHashes);
         const undoDiff = undoDiffResult.diff;
 
         try {
           const store = await loadHashStore();
           const undoLines = splitLines(undo.content);
-          persistSnapshot(store, mutationTargetPath, undo.content, undo.hashes);
+          persistSnapshot(store, mutationTargetPath, undo.content, undo.hashes, undoLines.map((line) => contentChecksum(hashSource(line))));
           freeAnchors(mutationTargetPath);
           adoptAnchors(
             mutationTargetPath,

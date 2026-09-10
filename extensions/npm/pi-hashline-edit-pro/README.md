@@ -89,7 +89,7 @@ Single line: use the same anchor for `remove_from` and `remove_to`. `replace_fro
 
 The request is checked before any file I/O, so a bad request never touches the file.
 
-Common copy-paste slips are fixed automatically and reported as warnings: a leftover `anchor│` prefix in `replacement_lines` or the anchor fields (a prefix of 4 to 5 characters before `│`, for example `ab12│`), diff-preview rows pasted into the replacement, a reversed range, and a boundary line pasted twice. New lines that re-include a block adjacent to the range are stripped when that block is unique in the file. The whole run is stripped as one unit, so re-including an unchanged block next to the range never duplicates it.
+Common copy-paste slips are fixed automatically and reported as warnings: a leftover `anchor│` prefix in `replacement_lines` or the anchor fields (a prefix of 4 to 5 characters before `│`, for example `ab12│`), diff-preview rows pasted into the replacement, a reversed range, and a boundary line pasted twice. New lines that re-include a block adjacent to the range are stripped when that block is unique in the file. The whole run is stripped as one unit, so re-including an unchanged block next to the range never duplicates it. Boundary dedup has three modes in `/hashline-config`: `on` strips with a warning, `off` applies edits literally, and `strict` rejects the edit with `[E_BOUNDARY_STRICT]` when any replacement line would be stripped.
 
 Every line in the removed range must match what was last shown to you. The extension records the `anchor│content` rows it serves (`read` output, `anchor_grep` output, the auto-read block after `write`, the `+anchor│` and ` anchor│` rows of post-edit diffs, the current-range rows of `[E_RANGE_STALE]` feedback, and the context rows of stale-anchor feedback) and verifies the whole range against that record before writing. A line that changed on disk since it was shown, or an anchor that is not owned in this session, refuses the edit with `[E_RANGE_STALE]` or `[E_STALE_ANCHOR]` and returns the current range with fresh anchors, so the retry needs no `read`. An owned anchor enters the served record when its row is shown (after a restart, restored ownership counts as shown), so a file with no owned anchors cannot be edited by anchor at all; call `read` first. An owned line that was never shown — for example beyond an auto-read preview's truncation cap — is refused with `[E_RANGE_STALE]` and returns the current range, so the retry still needs no `read`.
 
@@ -97,7 +97,7 @@ An edit that produces identical content reports `No changes made` and leaves the
 
 After a successful edit, the diff is capped at 50KB. A row over 50KB is shown as a marker that keeps the row's anchor, and only the rows shown in the capped diff are recorded as served. The same caps apply to the `insert` and `undo_last_change` diffs, to the interactive previews, and to `details.patch`.
 
-Do not issue multiple `replace` or `insert` calls on the same file in one message. Parallel edits split attention across the post-edit diffs, and removed lines are easy to miss. Verify each diff before the next edit on that file.
+Multiple `replace` and `insert` calls on the same file in one message are grouped per file into one batch that validates every call against the pre-batch state and then applies them together on the batch's last call: earlier calls reply `In batch` (`In batch N` when several files batch) and the batch's last call shows the combined diff, with one undo reverting the whole batch. Batched calls must target disjoint ranges; overlapping ranges, or any failing call, aborts the whole batch with nothing written. Verify each batch diff before the next turn's edits on that file.
 
 ### insert
 
@@ -139,7 +139,7 @@ Output is capped at `limit` matched lines, 2000 rows, and 50KB of text, whicheve
 
 `undo_last_change` reverts the most recent successful `replace` or `insert` on a file, restoring the exact previous content, BOM and line endings included, plus the previous anchors.
 
-- History is per-file and single-level: only the most recent `replace` or `insert` can be reverted.
+- History is per-file and single-level: only the most recent `replace` or `insert` can be reverted. A same-turn batch of `replace`/`insert` calls on one file counts as one entry: one undo reverts the whole batch.
 - History is persisted and survives session restarts. A failed `write` does not clear it.
 - Every applied `replace` or `insert` is undoable; the undo record is saved before the edit is written.
 - A successful `write` clears the history for that file.
@@ -151,9 +151,9 @@ Output is capped at `limit` matched lines, 2000 rows, and 50KB of text, whicheve
 
 Auto-read is enabled by default. After a successful `write`, the extension reads the file and appends an `--- Auto-read (hashline anchors) ---` block, so you get fresh `anchor│content` anchors without a separate `read` call.
 
-After `replace`, `insert`, and `undo_last_change`, the result shows the post-edit diff. The `+anchor│` and ` anchor│` rows carry the current anchors, so follow-up edits can anchor on the diff directly. The `-anchor│` rows show removed lines with their old anchors, which are stale after the edit. When the context line next to a change is blank or whitespace-only, one more context line is shown in that direction, so the change stays anchored to visible content. Call `read` when you want the full file's anchors.
+After `replace`, `insert`, and `undo_last_change`, the result shows the post-edit diff. Inside a same-turn batch, only the batch's last call shows the combined diff, headed by a `batch:` line (`batch N:` when several files batch); earlier calls reply `In batch` (`In batch N` when several files batch). The `+anchor│` and ` anchor│` rows carry the current anchors, so follow-up edits can anchor on the diff directly. The `-anchor│` rows show removed lines with their old anchors, which are stale after the edit. When the context line next to a change is blank or whitespace-only, one more context line is shown in that direction, so the change stays anchored to visible content. Call `read` when you want the full file's anchors.
 
-Auto-read keeps the same 50KB and 2000-line budget as `read`. Change it in `/hashline-config`; both settings persist across sessions.
+Auto-read keeps the same 50KB and 2000-line budget as `read`. Change it in `/hashline-config`; both settings persist across sessions. The post-edit diff shows 1 surrounding line by default; change Diff context in `/hashline-config` (0-10, needs Auto-read) to show more or fewer.
 
 ## Tool result details
 
@@ -162,7 +162,7 @@ All five tools return machine-readable metadata in `details` alongside the model
 | Tool | `details` |
 | --- | --- |
 | `read` | `truncation` (set when output was truncated), `snapshotId` (a `v2\|path\|ino\|mtime\|ctime\|size` fingerprint), `nextOffset` (use as the next `offset`), and `metrics` with `truncated` and `next_offset`. |
-| `replace`, `insert` | `diff` (post-edit diff, capped, with current anchors on `+HASH│` and ` HASH│` rows), `patch` (a standard unified patch for external tools, capped like the diff), `patchTruncated` (true when the patch was cut and can no longer be applied as-is), `firstChangedLine`, `snapshotId`, `classification` (`"noop"` when nothing changed), and `metrics`: `edits_attempted`, `edits_noop`, `warnings`, `classification` (`"applied"` or `"noop"`), `changed_lines` (`{ first, last }`), `added_lines`, `removed_lines`. |
+| `replace`, `insert` | `diff` (post-edit diff, capped, with current anchors on `+HASH│` and ` HASH│` rows; a same-turn batch reports the combined diff on its last call and an empty diff on earlier calls), `patch` (a standard unified patch for external tools, capped like the diff), `patchTruncated` (true when the patch was cut and can no longer be applied as-is), `firstChangedLine`, `snapshotId`, `classification` (`"noop"` when nothing changed), `batch` (`{ id, size, last, total }` marking same-turn batch membership), and `metrics`: `edits_attempted`, `edits_noop`, `warnings`, `classification` (`"applied"` or `"noop"`), `changed_lines` (`{ first, last }`), `added_lines`, `removed_lines`. |
 | `undo_last_change` | `diff` (the undo diff with restored anchors), `patch`, `patchTruncated`, and `metrics` in the same shape as `replace`. |
 | `anchor_grep` | `metrics` with `matches` (capped at `limit`), `files`, and `truncated`; `truncation` (the standard pi truncation report) when output was cut; and `linesTruncated` (true when long lines were shown as fragments). |
 
@@ -170,7 +170,7 @@ All five tools return machine-readable metadata in `details` alongside the model
 
 | Command | Description |
 | --- | --- |
-| `/hashline-config` | Open the settings window: auto-read anchors, `anchor_grep` tool, required `path`, strict input, and boundary dedup. Persists across sessions. |
+| `/hashline-config` | Open the settings window: auto-read anchors, diff context lines, `anchor_grep` tool, required `path`, strict input, and boundary dedup. Persists across sessions. |
 | `/clear-anchors` | Clear the session's anchor claims. Anchors are re-claimed on the next `read`. |
 
 Settings live in `~/.config/pi-hashline-edit-pro/config.json`, created when a setting is first changed in `/hashline-config`:
@@ -181,7 +181,8 @@ Settings live in `~/.config/pi-hashline-edit-pro/config.json`, created when a se
   "anchorGrepEnabled": true,
   "requirePath": false,
   "strictInput": false,
-  "boundaryDedupEnabled": true
+  "boundaryDedupMode": "on",
+  "diffContextLines": 1
 }
 ```
 
@@ -230,10 +231,13 @@ Codes starting with `E_` are errors (the operation failed); codes starting with 
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted to the hash store; the edit was refused and the file was left unchanged. |
 | `[E_RANGE_STALE]` | A line in the replaced range no longer matches what was last shown (the file changed on disk, or the line was never shown). The edit was refused; the current range is returned with fresh anchors. |
 | `[W_BOUNDARY_BYPASS]` | The boundary anti-duplication was turned off for one replace call (an identical replacement had previously been cut to a noop); the duplicate lines were applied literally. The dedup is restored for the next call. |
+| `[E_BOUNDARY_STRICT]` | Strict boundary dedup rejected the edit because replacement lines re-include edge lines; resend without those lines. |
 | `[E_FILE_TOO_LARGE]` | The file exceeds the 1,353,139-line hashline limit or the 100MB size limit. |
 | `[E_REGISTRY]` | The anchor registry was not initialized; a serve or edit ran outside an initialized session. |
 | `[E_WRITE_HASH_ECHO]` | A `write` `content` line begins with the exact `anchor│` served for this file at the same line. The write is refused, file byte-identical; retry with bare content (remove the copied anchors). |
 | `[E_PATH_CHANGED]` | A write target changed identity after it was read; the write was refused to avoid following a swapped symlink or overwriting a replacement file. |
+| `[E_BATCH_OVERLAP]` | Batched `replace`/`insert` calls target overlapping ranges; the whole batch was refused with nothing written. Retry with disjoint ranges. |
+| `[E_BATCH_ABORTED]` | A same-turn edit batch aborted (a member failed, or the file changed mid-turn); nothing was written. The first failure is quoted; fix it and retry the batch. |
 | `[E_UNSAFE_REGEX]` | A grep regex can trigger excessive backtracking; simplify it or search with `literal: true`. |
 
 ## Troubleshooting

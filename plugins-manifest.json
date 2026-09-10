@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-09-09T07:39:49Z",
+  "updatedAt": "2026-09-10T02:15:46Z",
   "plugins": {
     "npm": {
       "@cortexkit/pi-magic-context": {
@@ -39,8 +39,8 @@
         "dir": "extensions/npm/@juicesharp/rpiv-todo"
       },
       "@narumitw/pi-btw": {
-        "version": "0.58.0",
-        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-btw/-/@narumitw%2fpi-btw-0.58.0.tgz",
+        "version": "0.58.1",
+        "resolved": "https://registry.npmjs.org/@narumitw%2fpi-btw/-/@narumitw%2fpi-btw-0.58.1.tgz",
         "dir": "extensions/npm/@narumitw/pi-btw"
       },
       "@narumitw/pi-caffeinate": {
@@ -99,8 +99,8 @@
         "dir": "extensions/npm/pi-cache-optimizer"
       },
       "pi-hashline-edit-pro": {
-        "version": "4.1.0",
-        "resolved": "https://registry.npmjs.org/pi-hashline-edit-pro/-/pi-hashline-edit-pro-4.1.0.tgz",
+        "version": "4.2.1",
+        "resolved": "https://registry.npmjs.org/pi-hashline-edit-pro/-/pi-hashline-edit-pro-4.2.1.tgz",
         "dir": "extensions/npm/pi-hashline-edit-pro"
       },
       "pi-mcp-adapter": {
@@ -124,8 +124,8 @@
         "dir": "extensions/npm/pi-web-access"
       },
       "pi-workspace-history": {
-        "version": "0.4.1",
-        "resolved": "https://registry.npmjs.org/pi-workspace-history/-/pi-workspace-history-0.4.1.tgz",
+        "version": "0.4.2",
+        "resolved": "https://registry.npmjs.org/pi-workspace-history/-/pi-workspace-history-0.4.2.tgz",
         "dir": "extensions/npm/pi-workspace-history"
       }
     },

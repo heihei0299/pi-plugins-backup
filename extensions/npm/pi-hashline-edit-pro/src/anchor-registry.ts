@@ -65,6 +65,7 @@ export function foldRegistryEvents(events: RegistryEvent[]): SessionState {
     } else if (event.kind === "allocate") {
       for (const [anchor, checksum] of event.rows) {
         state.owned.set(anchor, { path: event.path, checksum });
+        state.everMinted.add(anchor);
       }
     } else if (event.kind === "free") {
       if (event.anchors) {
@@ -187,7 +188,7 @@ export function mintAnchor(state: SessionState): string {
     }
   }
   throw new Error(
-    `${ANCHOR_POOL_EXHAUSTED_PREFIX}; free anchors with /clear-anchors or use write for very large files.`,
+    `${ANCHOR_POOL_EXHAUSTED_PREFIX}; use write for very large files.`,
   );
 }
 
@@ -514,12 +515,8 @@ export async function allocateFileAnchors(
   const lines = splitLines(content);
   const checksums = lines.map((line) => contentChecksum(hashSource(line)));
   if (options?.previous?.spans) {
-    const sessionState = current()!;
     const prevChecksums = splitLines(options.previous.content).map((line) => contentChecksum(hashSource(line)));
     const aligned = alignOwnershipWithSpans(path, options.previous.hashes, prevChecksums, checksums, options.previous.spans, { shadow });
-    for (let i = 0; i < aligned.anchors.length; i++) {
-      sessionState.owned.set(aligned.anchors[i]!, { path, checksum: checksums[i]! });
-    }
     if (!shadow && options.persist !== false) {
       persistSnapshot(store, path, content, aligned.anchors, checksums);
     }
@@ -545,9 +542,12 @@ export async function allocateFileAnchors(
     : (() => {
         const state = shadow ? cloneState(current()!) : current()!;
         const reuseIndex = fingerprintIndex(state, path);
+        const reuseTaken = new Map<string, number>();
         const anchors: string[] = checksums.map((checksum) => {
           const candidates = reuseIndex.get(checksum) ?? [];
-          const anchor = candidates.length > 0 ? candidates.shift()! : mintAnchor(state);
+          const taken = reuseTaken.get(checksum) ?? 0;
+          reuseTaken.set(checksum, taken + 1);
+          const anchor = taken < candidates.length ? candidates[taken]! : mintAnchor(state);
           state.everMinted.add(anchor);
           state.owned.set(anchor, { path, checksum });
           return anchor;

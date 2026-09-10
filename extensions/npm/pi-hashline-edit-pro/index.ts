@@ -16,12 +16,14 @@ import {
   toggleAnchorGrep,
   toggleRequirePath,
   toggleStrictInput,
-  toggleBoundaryDedup,
+  cycleBoundaryDedupMode,
+  adjustDiffContextLines,
 } from "./src/config";
 import { loadHashStore, persistSnapshot, pruneMissing } from "./src/hash-store";
 import { initRegistry, gcRegistrySidecars, clearRegistry, freeAnchors, markServed as markServedScoped } from "./src/anchor-registry";
 import { buildServedMap } from "./src/served";
 import { clearBoundaryBypass } from "./src/boundary-bypass";
+import { finalizeTurn, planAssistantMessage } from "./src/batch";
 import { currentEditFlags } from "./src/edit-common";
 import { HashlineConfigOverlay } from "./src/config-ui";
 import { registerWriteHook } from "./src/write-hook";
@@ -30,6 +32,8 @@ import { loadFileKindAndText } from "./src/file-kind";
 import { resolveInCwd } from "./src/fs-write";
 import { valAccess } from "./src/validation";
 import { splitLines } from "./src/utils";
+import { hashSource } from "./src/hashline";
+import { contentChecksum } from "./src/hashline/hasher";
 
 export default function (pi: ExtensionAPI): void {
   regRead(pi);
@@ -86,7 +90,7 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("hashline-config", {
-    description: "Open the hashline settings window (auto-read, grep, path, strict input, dedup)",
+    description: "Open the hashline settings window (auto-read, diff context, grep, path, strict input, dedup)",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) {
         ctx.ui.notify("/hashline-config requires interactive mode", "error");
@@ -97,8 +101,9 @@ export default function (pi: ExtensionAPI): void {
           tui,
           theme,
           done,
-          onToggle: async (key) => {
+          onToggle: async (key, delta) => {
             if (key === "autoRead") autoRead = await toggleAutoRead();
+            else if (key === "diffContextLines") await adjustDiffContextLines(delta ?? 1);
             else if (key === "anchorGrepEnabled") {
               const enabled = await toggleAnchorGrep();
               const active = pi.getActiveTools();
@@ -106,7 +111,7 @@ export default function (pi: ExtensionAPI): void {
             }
             else if (key === "requirePath") await toggleRequirePath();
             else if (key === "strictInput") await toggleStrictInput();
-            else await toggleBoundaryDedup();
+            else await cycleBoundaryDedupMode();
             await refreshEditTools();
           },
         });
@@ -125,6 +130,21 @@ export default function (pi: ExtensionAPI): void {
       clearRegistry();
       ctx.ui.notify(`Anchor claims cleared for this session`, "info");
     },
+  });
+  pi.on("message_end", async (event, ctx) => {
+    try {
+      await planAssistantMessage(event.message, ctx.cwd);
+    } catch (error) {
+      console.error("Failed to plan edit batch:", error);
+    }
+  });
+  pi.on("turn_end", async (event) => {
+    try {
+      const ids = (event.toolResults ?? []).map((result) => (result as { toolCallId?: unknown }).toolCallId).filter((id): id is string => typeof id === "string");
+      await finalizeTurn(ids);
+    } catch (error) {
+      console.error("Failed to finalize edit batch:", error);
+    }
   });
   pi.on("tool_result", async (event, ctx) => {
     if (event.isError) return;
@@ -161,7 +181,7 @@ export default function (pi: ExtensionAPI): void {
           DEFAULT_MAX_LINES,
         );
         const fileLines = splitLines(normalized);
-        persistSnapshot(await loadHashStore(), absolutePath, normalized, fileHashes);
+        persistSnapshot(await loadHashStore(), absolutePath, normalized, fileHashes, fileLines.map((line) => contentChecksum(hashSource(line))));
         markServedScoped(absolutePath, buildServedMap(fileHashes, fileLines, preview.servedHashes), new Set(fileHashes));
         return {
           content: [
@@ -191,6 +211,8 @@ export default function (pi: ExtensionAPI): void {
     const metrics = (event.details as { metrics?: RMetrics } | undefined)?.metrics;
     if (metrics?.classification === "noop") return;
 
+    const batched = (event.details as { batch?: { last?: boolean } } | undefined)?.batch;
+    if (batched?.last === false) return;
     const toolDetails = event.details as ReplaceDetails | undefined;
     const diff = toolDetails?.diff;
     const detailWarnings = Array.isArray(toolDetails?.warnings) ? toolDetails.warnings.filter((w): w is string => typeof w === "string") : [];
