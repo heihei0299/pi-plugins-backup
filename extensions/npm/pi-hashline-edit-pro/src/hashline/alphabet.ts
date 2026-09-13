@@ -1,11 +1,11 @@
 import anchorData from "./anchor-table.json";
-
-const TABLE: string = anchorData.anchors;
-
+const rawAnchors: unknown = (anchorData as { anchors?: unknown }).anchors;
+if (typeof rawAnchors !== "string" || rawAnchors.length === 0 || rawAnchors.length % 4 !== 0) {
+  throw new Error("[E_REGISTRY] Anchor table is missing or corrupt; reinstall pi-hashline-edit-pro.");
+}
+const TABLE: string = rawAnchors;
 export const HASH_LEN = 4;
-
 export const ANCHOR_COUNT = TABLE.length / HASH_LEN;
-
 const ALNUM = "A-Za-z0-9";
 
 export const ALPH_RE = new RegExp(`^[${ALNUM}]+$`);

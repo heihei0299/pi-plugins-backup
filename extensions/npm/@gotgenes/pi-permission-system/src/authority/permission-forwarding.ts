@@ -287,10 +287,9 @@ export function createPermissionForwardingLocation(
  * **in-process** child of `sessionId`, so the two share a `globalThis` and the
  * requester may consult the serving-session registry to decide whether anyone
  * is draining its inbox. `"env"` means the target lives in another process,
- * where that signal is unavailable; `"self"` is the UI host owning its own
- * forwarding location.
+ * where that signal is unavailable.
  */
-export type PermissionForwardingTargetSource = "self" | "registry" | "env";
+export type PermissionForwardingTargetSource = "registry" | "env";
 
 /** The resolved forwarding target together with how it was found. */
 export interface PermissionForwardingTarget {
@@ -298,8 +297,14 @@ export interface PermissionForwardingTarget {
   source: PermissionForwardingTargetSource;
 }
 
+/**
+ * The session this node relays its asks to, or `null` when it has none.
+ *
+ * Answers only "which *other* session", never "myself": a node that owns its
+ * forwarding location has nothing to resolve, and a request filed into one's
+ * own inbox is drained by no watcher.
+ */
 export function resolvePermissionForwardingTarget(options: {
-  hasUI: boolean;
   isSubagent: boolean;
   currentSessionId?: string | null;
   env?: NodeJS.ProcessEnv;
@@ -308,16 +313,17 @@ export function resolvePermissionForwardingTarget(options: {
   /** In-process subagent session registry (checked before env vars). */
   registry?: SubagentSessionRegistry;
 }): PermissionForwardingTarget | null {
-  if (options.hasUI) {
-    const own = normalizePermissionForwardingSessionId(
-      options.currentSessionId,
-    );
-    return own === null ? null : { sessionId: own, source: "self" };
-  }
-
   if (!options.isSubagent) {
     return null;
   }
+
+  // A candidate naming the requester itself is not a usable target: the
+  // request would land in an inbox this node is not draining, and no other node
+  // would ever answer it. A child's own copy of a subagent extension can
+  // overwrite the spawner's marker with the child's own session id, which is
+  // how such a candidate arises (#907).
+  const own = normalizePermissionForwardingSessionId(options.currentSessionId);
+  const namesAnotherSession = (candidate: string): boolean => candidate !== own;
 
   // 1. Registry — in-process subagents register parentSessionId explicitly.
   if (options.registry && options.sessionId) {
@@ -325,14 +331,18 @@ export function resolvePermissionForwardingTarget(options: {
     const resolved = normalizePermissionForwardingSessionId(
       entry?.parentSessionId,
     );
-    if (resolved) return { sessionId: resolved, source: "registry" };
+    if (resolved && namesAnotherSession(resolved)) {
+      return { sessionId: resolved, source: "registry" };
+    }
   }
 
   // 2. Env vars — process-based subagent extensions.
   const env = options.env ?? process.env;
   for (const key of SUBAGENT_PARENT_SESSION_ENV_CANDIDATES) {
     const resolved = normalizePermissionForwardingSessionId(env[key]);
-    if (resolved) return { sessionId: resolved, source: "env" };
+    if (resolved && namesAnotherSession(resolved)) {
+      return { sessionId: resolved, source: "env" };
+    }
   }
   return null;
 }

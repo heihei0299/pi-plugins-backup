@@ -1,10 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatSize, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { stat } from "fs/promises";
-import { dirname, join, relative } from "path";
-import { spawn, spawnSync } from "child_process";
-import { createInterface } from "readline";
+import { stat } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, win32 } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
 import { tryReadNormFile } from "./file-reader";
 import { MAX_HASH_LINES, fmtRow, HASH_LEN, HASH_SEP } from "./hashline";
 import { ANCHOR_POOL_EXHAUSTED_PREFIX, MAX_GREP_LINE_BYTES } from "./constants";
@@ -292,8 +292,8 @@ async function resolveRgPath(): Promise<string> {
     if (!r.error && r.status === 0) { cachedRgPath = "rg"; return "rg"; }
   } catch {}
   try {
-    const { homedir } = await import("os");
-    const { existsSync } = await import("fs");
+    const { homedir } = await import("node:os");
+    const { existsSync } = await import("node:fs");
     const home = process.env.HOME ?? homedir();
     const base = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
     const bin = join(base, "bin", process.platform === "win32" ? "rg.exe" : "rg");
@@ -303,10 +303,10 @@ async function resolveRgPath(): Promise<string> {
     }
   } catch {}
   try {
-    const { createRequire } = await import("module");
+    const { createRequire } = await import("node:module");
     const require = createRequire(import.meta.url);
     const pkgPath = require.resolve("@earendil-works/pi-coding-agent/package.json");
-    const { dirname } = await import("path");
+    const { dirname } = await import("node:path");
     const piDir = dirname(pkgPath);
     const toolsManagerPath = join(piDir, "dist/utils/tools-manager.js");
     const mod = await import("file://" + toolsManagerPath);
@@ -326,6 +326,12 @@ async function collectRgMatches(
   signal?: AbortSignal,
 ): Promise<Map<string, number[]>> {
   const args = ["--json", "--line-number", "--color=never", "--hidden", "--glob", "!.git"];
+  const wanted = req.limit ?? 100;
+  args.push("--max-count", String(wanted + 1));
+  if (typeof req.glob === "string" && req.glob.length > 0) {
+    const stripped = req.glob.startsWith("/") ? req.glob.slice(1) : req.glob;
+    if (!stripped.includes("/")) args.push("--glob", stripped);
+  }
   if (req.ignoreCase) args.push("--ignore-case");
   if (req.literal) args.push("--fixed-strings");
   args.push("--", pattern, searchPath);
@@ -366,7 +372,7 @@ async function collectRgMatches(
         if (typeof filePath === "string" && typeof lineNumber === "number") {
           let abs: string;
           try {
-            abs = filePath.startsWith("/") || /^[A-Za-z]:\\/.test(filePath) ? filePath : join(searchPath, filePath);
+            abs = isAbsolute(filePath) || win32.isAbsolute(filePath) ? filePath : join(searchPath, filePath);
           } catch {
             abs = filePath;
           }
@@ -451,7 +457,7 @@ const grepToolSchema = Type.Object(
       }),
     ),
   },
-  { additionalProperties: false },
+  { additionalProperties: true },
 );
 
 
@@ -579,15 +585,17 @@ export function regGrep(pi: ExtensionAPI): void {
       let linesReplaced = 0;
       let countOnly = false;
       let poolSkipped = 0;
-      const readGrepFile = async (absPath: string) => {
+      const makeGrepReader = (allocation: "real" | "shadow") => async (absPath: string) => {
         try {
-          return await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, allocation: "real", signal });
+          return await tryReadNormFile(absPath, ctx.cwd, { maxLines: MAX_HASH_LINES, noPersist: true, allocation, signal });
         } catch (error) {
           if (!isPoolExhaustedError(error)) throw error;
           poolSkipped += 1;
           return undefined;
         }
       };
+      const readGrepFile = makeGrepReader("real");
+      const readGrepFileShadow = makeGrepReader("shadow");
       const rgMatches = await collectRgMatches(rgPath, req.pattern, base, req, signal);
       const sortedFiles = [...rgMatches.keys()].sort(cmp);
       for (let f = 0; f < sortedFiles.length; f++) {
@@ -603,7 +611,7 @@ export function regGrep(pi: ExtensionAPI): void {
             const globPath = relative(globRoot, absPath).replace(/\\/g, "/");
             if (!globRegex.test(globPath) && !globRegex.test(displayPath)) continue;
           }
-          const norm = await readGrepFile(absPath);
+          const norm = await readGrepFileShadow(absPath);
           if (!norm) continue;
           const hit = makeHitFromIndices(norm, relative(ctx.cwd, absPath).replace(/\\/g, "/"), indices, context, validatedRegex, totalForFile, indices.length);
           const display = displayRowsForHit(hit);

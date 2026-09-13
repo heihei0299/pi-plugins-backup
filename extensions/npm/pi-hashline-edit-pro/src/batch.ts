@@ -1,8 +1,8 @@
-import { readFile } from "fs/promises";
-import { constants } from "fs";
-import { relative } from "path";
+import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { relative } from "node:path";
 import { readConfig, getDiffContextLines } from "./config";
-import { throwIfStrictInput, tryResolveEditTarget } from "./edit-common";
+import { resolveEditTarget, throwIfStrictInput, tryResolveEditTarget } from "./edit-common";
 import { readNormFile, safeSnapId } from "./file-reader";
 import { resolveInCwd, writeAtomic, type FileIdentity } from "./fs-write";
 import {
@@ -50,6 +50,7 @@ interface BatchBase {
   hadUtf8DecodeErrors: boolean;
   absolutePath: string;
   snapshotId?: string;
+  baseLines: string[];
 }
 
 export interface BatchPiece {
@@ -65,6 +66,7 @@ export interface BatchPiece {
   noop: boolean;
   noopPayload?: string;
   foldedLines: number;
+  bypassConsumed?: boolean;
 }
 
 export interface BatchMemberInput {
@@ -80,6 +82,7 @@ export interface BatchMemberInput {
   strictBoundaryDedup: boolean;
   noopPayload?: string;
   foldedLines?: number;
+  bypassConsumed?: boolean;
 }
 
 interface BatchState {
@@ -97,6 +100,7 @@ interface BatchState {
   failures: number;
   failed: boolean;
   firstError?: unknown;
+  poisonedBy?: string;
   warnings: string[];
 }
 
@@ -144,12 +148,38 @@ function normalizeEditArgs(args: unknown): NormalizedEditArgs | undefined {
   }
   return undefined;
 }
-
 function anchorTargetFor(args: unknown): string | undefined {
   const normalized = normalizeEditArgs(args);
   if (!normalized) return undefined;
   if (normalized.kind === "replace") return tryResolveEditTarget(normalized.removeFrom, normalized.removeTo);
   return tryResolveEditTarget(normalized.anchor);
+}
+function unresolvedErrorFor(call: EditCall): Error {
+  const normalized = normalizeEditArgs(call.args);
+  if (!normalized) return new Error(`sibling invalid`);
+  const refs = normalized.kind === "replace" ? [normalized.removeFrom, normalized.removeTo].filter((ref): ref is string => typeof ref === "string").join("→") : normalized.anchor;
+  try {
+    if (normalized.kind === "replace") resolveEditTarget(normalized.removeFrom, normalized.removeTo);
+    else resolveEditTarget(normalized.anchor);
+  } catch {
+    return new Error(`sibling stale (${refs})`);
+  }
+  return new Error(`sibling stale (${refs})`);
+}
+async function inferredTargetFor(args: unknown, cwd: string, requirePath: boolean): Promise<string | undefined> {
+  const normalized = normalizeEditArgs(args);
+  if (!normalized) return undefined;
+  if (requirePath && normalized.path) {
+    try {
+      return (await resolveInCwd(normalized.path, cwd)).resolved;
+    } catch {
+      return undefined;
+    }
+  }
+  if (normalized.kind === "replace") {
+    return tryResolveEditTarget(normalized.removeFrom) ?? (normalized.removeTo ? tryResolveEditTarget(normalized.removeTo) : undefined);
+  }
+  return undefined;
 }
 
 async function verifyPaths(
@@ -191,10 +221,12 @@ export async function planAssistantMessage(message: unknown, cwd: string): Promi
     calls.push({ id: block.id, name: block.name, args: block.arguments });
   }
   if (calls.length < 2) return;
+  const earlyConfig = await readConfig();
+  const requirePath = earlyConfig.requirePath === true;
   interface ResolvedCall { id: string; target: string; kind: BatchKind; args: unknown }
   const resolved: ResolvedCall[] = [];
   for (const call of calls) {
-    const target = anchorTargetFor(call.args);
+    const target = anchorTargetFor(call.args) ?? await inferredTargetFor(call.args, cwd, requirePath);
     if (target) resolved.push({ id: call.id, target, kind: call.name as BatchKind, args: call.args });
   }
   const groups = new Map<string, ResolvedCall[]>();
@@ -204,10 +236,8 @@ export async function planAssistantMessage(message: unknown, cwd: string): Promi
     groups.set(item.target, group);
   }
   const multi = [...groups.values()].filter((group) => group.length >= 2);
-  if (multi.length === 0) return;
-  const config = await readConfig();
   const finalGroups: ResolvedCall[][] = [];
-  if (config.requirePath === true) {
+  if (requirePath) {
     for (const group of multi) {
       const verified = await verifyPaths(group, cwd);
       if (verified.length >= 2) finalGroups.push(verified);
@@ -215,11 +245,22 @@ export async function planAssistantMessage(message: unknown, cwd: string): Promi
   } else {
     finalGroups.push(...multi);
   }
-  if (finalGroups.length === 0) return;
+  const resolvedIds = new Set(resolved.map((item) => item.id));
+  const unplanned = calls.filter((call) => !resolvedIds.has(call.id));
+  let poison: { target: string; error: unknown; callId: string } | undefined;
+  if (unplanned.length > 0 && groups.size === 1) {
+    const sole = [...groups.values()][0]!;
+    const poisonTarget = sole[0]!.target;
+    const poisonCall = unplanned[0]!;
+    poison = { target: poisonTarget, error: unresolvedErrorFor(poisonCall), callId: poisonCall.id };
+    if (!finalGroups.some((group) => group[0]!.target === poisonTarget)) finalGroups.push(sole);
+  }
   let display = 0;
   for (const group of finalGroups) {
     display += 1;
     const key = nextBatchKey++;
+    const matchingPoison = poison !== undefined && group[0]!.target === poison.target ? poison : undefined;
+    const poisoned = matchingPoison !== undefined;
     batches.set(key, {
       display,
       target: group[0]!.target,
@@ -229,8 +270,9 @@ export async function planAssistantMessage(message: unknown, cwd: string): Promi
       pieces: [],
       applied: 0,
       noops: 0,
-      failures: 0,
-      failed: false,
+      failures: poisoned ? 1 : 0,
+      failed: poisoned,
+      ...(matchingPoison ? { firstError: matchingPoison.error, poisonedBy: matchingPoison.callId } : {}),
       warnings: [],
     });
     group.forEach((item, index) => {
@@ -310,9 +352,21 @@ function batchPlaceholder(member: PlannedMember, piece: BatchPiece, snapshotId: 
   };
 }
 
+export function withAbortSuffix(message: string, display: number): string {
+  const suffix = `Aborts batch ${display}.`;
+  if (message.includes(suffix)) return message;
+  return message.endsWith(".") ? `${message} ${suffix}` : `${message}. ${suffix}`;
+}
+export function suffixPoisonCause(toolCallId: string, error: unknown): void {
+  if (!(error instanceof Error)) return;
+  for (const runtime of batches.values()) {
+    if (runtime.poisonedBy === toolCallId) error.message = withAbortSuffix(error.message, runtime.display);
+  }
+}
 export function noteBatchFailure(member: PlannedMember, error: unknown): void {
   const runtime = batches.get(member.batchKey);
   if (!runtime) return;
+  if (error instanceof Error && !error.message.startsWith("[E_OP_ABORTED]")) error.message = withAbortSuffix(error.message, member.display);
   runtime.failures += 1;
   if (!runtime.failed) {
     runtime.failed = true;
@@ -320,9 +374,15 @@ export function noteBatchFailure(member: PlannedMember, error: unknown): void {
   }
 }
 
-function batchAbortedError(runtime: BatchState): Error {
-  const first = runtime.firstError instanceof Error ? runtime.firstError.message : String(runtime.firstError);
-  return new Error(`[E_BATCH_ABORTED] Batch ${runtime.display} aborted; nothing was written. First failure: ${first}`);
+function batchAbortedError(runtime: BatchState, input?: BatchMemberInput): Error {
+  restoreBatchBypasses(runtime, input);
+  return new Error(`[E_OP_ABORTED] Batch ${runtime.display} aborted.`);
+}
+function restoreBatchBypasses(runtime: BatchState, input?: BatchMemberInput): void {
+  for (const piece of runtime.pieces) {
+    if (piece.bypassConsumed && piece.noopPayload) markBoundaryNoop(runtime.target, piece.noopPayload);
+  }
+  if (input?.bypassConsumed && input.noopPayload) markBoundaryNoop(input.mutationTargetPath, input.noopPayload);
 }
 
 export async function ensureBatchBase(input: {
@@ -351,6 +411,7 @@ export async function ensureBatchBase(input: {
     hadUtf8DecodeErrors: file.hadUtf8DecodeErrors,
     absolutePath: file.absolutePath,
     ...(snapshotId !== undefined ? { snapshotId } : {}),
+    baseLines: splitLines(file.normalized),
   };
   runtime.base = base;
   runtime.served = servedForPath(file.absolutePath);
@@ -365,7 +426,7 @@ export async function ensureBatchBase(input: {
 export async function executeBatchMember(input: BatchMemberInput): Promise<TResult> {
   const runtime = batches.get(input.member.batchKey);
   if (!runtime) throw new Error(`[E_STALE_ANCHOR] Batch ${input.member.display} is no longer tracked. Call read for fresh anchors.`);
-  if (runtime.failed) throw batchAbortedError(runtime);
+  if (runtime.failed) throw batchAbortedError(runtime, input);
   let base: BatchBase;
   try {
     base = await ensureBatchBase({
@@ -377,11 +438,13 @@ export async function executeBatchMember(input: BatchMemberInput): Promise<TResu
     });
   } catch (error) {
     noteBatchFailure(input.member, error);
+    restoreBatchBypasses(runtime, input);
     throw error;
   }
   if (input.mutationTargetPath !== input.member.target) {
     const error = new Error(`[E_STALE_ANCHOR] "${input.hedit.hash_bounds[0].hash}" is no longer owned by ${input.member.target}. Call read for fresh anchors.`);
     noteBatchFailure(input.member, error);
+    restoreBatchBypasses(runtime, input);
     throw error;
   }
   const displayPath = runtime.paths?.displayPath ?? input.targetPath;
@@ -393,6 +456,7 @@ export async function executeBatchMember(input: BatchMemberInput): Promise<TResu
       skipBoundaryDedup: input.skipBoundaryDedup,
       strictBoundaryDedup: input.strictBoundaryDedup,
       signal: input.signal,
+      baseFileLines: base.baseLines,
     });
   } catch (error) {
     if (error instanceof RangeStaleError) adoptAnchors(base.absolutePath, error.rangeServedMap);
@@ -400,15 +464,17 @@ export async function executeBatchMember(input: BatchMemberInput): Promise<TResu
     else if (error instanceof Error && error.message.startsWith("[E_BOUNDARY_STRICT]")) {
       const indexed = new Error(`edit #${input.member.order} strict boundary-dedup rejection: ${error.message}`);
       noteBatchFailure(input.member, indexed);
+      restoreBatchBypasses(runtime, input);
       throw indexed;
     }
     noteBatchFailure(input.member, error);
+    restoreBatchBypasses(runtime, input);
     throw error;
   }
   const start = planned.resolved.hash_bounds[0].line;
   const end = planned.resolved.hash_bounds[1].line;
   const newLines = planned.resolved.content_lines;
-  const baseLines = splitLines(base.content);
+  const baseLines = base.baseLines;
   const originalSlice = baseLines.slice(start - 1, end);
   const noop = originalSlice.length === newLines.length && originalSlice.every((line, index) => line === newLines[index]);
   const autoFixes = planned.autoFixes?.length ?? 0;
@@ -425,6 +491,7 @@ export async function executeBatchMember(input: BatchMemberInput): Promise<TResu
     noop,
     ...(input.noopPayload !== undefined ? { noopPayload: input.noopPayload } : {}),
     foldedLines: input.foldedLines ?? 0,
+    ...(input.bypassConsumed ? { bypassConsumed: true as const } : {}),
   };
   runtime.pieces.push(piece);
   if (input.kind === "replace") runtime.replaceCount += 1;
@@ -476,20 +543,27 @@ async function finishBatch(member: PlannedMember, signal?: AbortSignal): Promise
     const prev = ordered[i - 1]!;
     const current = ordered[i]!;
     if (current.start <= prev.end) {
+      restoreBatchBypasses(runtime);
       throw new Error(`[E_BATCH_OVERLAP] Batch ${runtime.display} has overlapping ranges: ${formatBatchPiece(prev)} overlaps ${formatBatchPiece(current)}`);
     }
   }
+  const composed = composeBatchLines(base.content, appliedPieces);
   const warnings = [...runtime.warnings];
   if (base.hadUtf8DecodeErrors) warnings.push("Non-UTF-8 bytes were shown as U+FFFD; this edit rewrote the file as UTF-8.");
   const dedupTotal = runtime.pieces.reduce((sum, piece) => sum + piece.autoFixes, 0);
   if (dedupTotal > 0) warnings.push(boundaryDedupWarning(dedupTotal));
-  await throwIfStrictInput(dedupeWarnings(warnings));
-  const composed = composeBatchLines(base.content, appliedPieces);
-  assertNotEmpty(base.content, composed);
-  assertLineLimit(composed, paths.displayPath, MAX_HASH_LINES);
-  const finalBytes = base.bom + restoreEndings(composed, base.ending);
-  if (Buffer.byteLength(finalBytes, "utf-8") > MAX_BYTES) {
-    throw new Error(`[E_FILE_TOO_LARGE] File is too large: ${paths.displayPath} (exceeds the ${MAX_BYTES / (1024 * 1024)}MB size limit). For very large files, use write.`);
+  try {
+    await throwIfStrictInput(dedupeWarnings(warnings));
+    assertNotEmpty(base.content, composed);
+    assertLineLimit(composed, paths.displayPath, MAX_HASH_LINES);
+    const finalBytes = base.bom + restoreEndings(composed, base.ending);
+    if (Buffer.byteLength(finalBytes, "utf-8") > MAX_BYTES) {
+      throw new Error(`[E_FILE_TOO_LARGE] File is too large: ${paths.displayPath} (exceeds the ${MAX_BYTES / (1024 * 1024)}MB size limit). For very large files, use write.`);
+    }
+  } catch (error) {
+    restoreBatchBypasses(runtime);
+    if (error instanceof Error) error.message = withAbortSuffix(error.message, runtime.display);
+    throw error;
   }
   if (composed === base.content) {
     const snapshotId = await safeSnapId(paths.absolutePath, "noop edit");
@@ -501,10 +575,24 @@ async function finishBatch(member: PlannedMember, signal?: AbortSignal): Promise
     currentRaw = await readFile(runtime.target, "utf-8");
   } catch (error) {
     if (errCode(error) !== "ENOENT") throw error;
-    throw new Error(`[E_BATCH_ABORTED] Batch ${runtime.display} aborted: the file was deleted after the batch started; nothing was written.`);
+    restoreBatchBypasses(runtime);
+    throw new Error(`[E_OP_ABORTED] Batch ${runtime.display} aborted: the file was deleted after the batch started.`);
   }
   if (toLF(stripBOM(currentRaw).text) !== base.content) {
-    throw new Error(`[E_BATCH_ABORTED] Batch ${runtime.display} aborted: the file changed after the batch started; nothing was written. Call read for fresh anchors and retry.`);
+    restoreBatchBypasses(runtime);
+    throw new Error(`[E_OP_ABORTED] Batch ${runtime.display} aborted: the file changed after the batch started. Call read for fresh anchors and retry.`);
+  }
+  const preflightSpans = appliedPieces.map((piece) => ({ start: piece.start - 1, end: piece.end - 1, replacementCount: piece.newLines.length }));
+  try {
+    await lineHashes(composed, runtime.target, {
+      content: base.content,
+      hashes: base.hashes,
+      spans: preflightSpans,
+    }, undefined, false, true);
+  } catch (error) {
+    restoreBatchBypasses(runtime);
+    if (error instanceof Error) error.message = withAbortSuffix(error.message, runtime.display);
+    throw error;
   }
   const undo = await saveUndo(runtime.target, {
     content: base.content,
@@ -514,23 +602,32 @@ async function finishBatch(member: PlannedMember, signal?: AbortSignal): Promise
     resultContent: composed,
   });
   if (!undo.persisted) {
-    throw new Error(`[E_UNDO_UNAVAILABLE] Could not persist undo history; the edit was not applied and ${paths.displayPath} is unchanged.`);
+    restoreBatchBypasses(runtime);
+    throw new Error(`[E_UNDO_UNAVAILABLE] Could not persist undo history for ${paths.displayPath}. Aborts batch ${runtime.display}.`);
   }
   try {
     abortIf(signal);
     await writeAtomic(paths.absolutePath, base.bom + restoreEndings(composed, base.ending), base.identity);
   } catch (error) {
     await undo.restore();
+    restoreBatchBypasses(runtime);
+    if (error instanceof Error) error.message = withAbortSuffix(error.message, runtime.display);
     throw error;
   }
   clearBoundaryBypass(runtime.target);
   const updatedSnapshotId = await safeSnapId(paths.absolutePath, "post-edit");
   const spans = appliedPieces.map((piece) => ({ start: piece.start - 1, end: piece.end - 1, replacementCount: piece.newLines.length }));
-  const resultHashes = await lineHashes(composed, runtime.target, {
-    content: base.content,
-    hashes: base.hashes,
-    spans,
-  });
+  let resultHashes: string[];
+  try {
+    resultHashes = await lineHashes(composed, runtime.target, {
+      content: base.content,
+      hashes: base.hashes,
+      spans,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${detail} File was written; anchor finalization failed. One undo reverts. Call read for fresh anchors.`);
+  }
   const range = changedRange(base.content, composed);
   let added = 0;
   let removed = 0;
@@ -559,6 +656,7 @@ async function finishBatch(member: PlannedMember, signal?: AbortSignal): Promise
       },
       boundaryDedupAbove: [],
       boundaryDedupBelow: [],
+      spans,
     },
     batchVerb(runtime),
     await getDiffContextLines(),

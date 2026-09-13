@@ -1,5 +1,5 @@
-import { constants } from "fs";
-import { open } from "fs/promises";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -10,7 +10,7 @@ import { hashSource } from "./hashline";
 import { markServed as markServedScoped, freeAnchors, adoptAnchors } from "./anchor-registry";
 import { resolveInCwd, writeAtomic, type FileIdentity } from "./fs-write";
 import { toLF, stripBOM, restoreEndings, type LineEnding } from "./normalize";
-import { genDiff, genPatch } from "./replace-diff";
+import { genDiff, genPatch, spansFromHashes } from "./replace-diff";
 import { getDiffContextLines } from "./config";
 import { cntDiff, errCode, makePrepareArguments, splitLines } from "./utils";
 import { loadP, loadGuide } from "./prompts";
@@ -179,7 +179,8 @@ export function regUndo(pi: ExtensionAPI): void {
         const linesAddedByReplace = cntDiff(diffResult.diff, "+");
         const linesRemovedByReplace = cntDiff(diffResult.diff, "-");
         const restoredRange = changedRange(currentNormalized, undo.content);
-        const undoDiffResult = genDiff(currentNormalized, undo.content, await getDiffContextLines(), undo.hashes, currentHashes);
+        const undoSpans = spansFromHashes(currentHashes, undo.hashes);
+        const undoDiffResult = genDiff(currentNormalized, undo.content, await getDiffContextLines(), undo.hashes, currentHashes, undefined, undoSpans);
         const undoDiff = undoDiffResult.diff;
 
         try {

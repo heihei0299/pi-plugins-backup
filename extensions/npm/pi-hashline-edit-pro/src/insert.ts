@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { constants } from "fs";
+import { constants } from "node:fs";
 import { execPipeline, type ReqParams, type ReplaceDetails, previewFromPipe, previewError } from "./replace";
 import { commitEdit } from "./commit";
-import { batchMemberFor, executeBatchMember, noteBatchFailure } from "./batch";
+import { batchMemberFor, ensureBatchBase, executeBatchMember, noteBatchFailure, suffixPoisonCause } from "./batch";
 import { readNormFile, type NormFile } from "./file-reader";
 import { MAX_HASH_LINES, parseHashRef, resEdit, resolveAnchorLine, type Anchor, type HEdit } from "./hashline";
 import { stripAnchorRow } from "./hashline/resolve";
@@ -95,11 +95,8 @@ export async function insertPreview(request: unknown, cwd: string, signal?: Abor
     const normalized = normReq(request);
     const previewFixes: string[] = [];
     if (isRec(normalized)) {
-      const expanded = decodeStringArray(normalized.lines);
-      if (expanded) {
-        previewFixes.push('[W_BAD_SHAPE] Unwrapped JSON array syntax from a lines element.');
-        normalized.lines = expanded;
-      }
+      const expanded = decodeStringArray(normalized.lines, previewFixes, "lines");
+      if (expanded) normalized.lines = expanded;
     }
     assertInsertReq(normalized);
     const previewReq = normalized as InsertReq;
@@ -178,11 +175,8 @@ export function buildInsertToolDef(flags: EditToolFlags = DEFAULT_EDIT_FLAGS): I
       const canonical = normReq(params);
       const insertWarnings: string[] = [];
       if (isRec(canonical)) {
-        const expanded = decodeStringArray(canonical.lines);
-        if (expanded) {
-          insertWarnings.push('[W_BAD_SHAPE] Unwrapped JSON array syntax from a lines element.');
-          canonical.lines = expanded;
-        }
+        const expanded = decodeStringArray(canonical.lines, insertWarnings, "lines");
+        if (expanded) canonical.lines = expanded;
       }
       assertInsertReq(canonical);
       const req = canonical;
@@ -193,6 +187,7 @@ export function buildInsertToolDef(flags: EditToolFlags = DEFAULT_EDIT_FLAGS): I
       }).catch((error: unknown) => {
         const member = batchMemberFor(_toolCallId);
         if (member) noteBatchFailure(member, error);
+        else suffixPoisonCause(_toolCallId, error);
         throw error;
       });
       let ref: Anchor;
@@ -207,51 +202,54 @@ export function buildInsertToolDef(flags: EditToolFlags = DEFAULT_EDIT_FLAGS): I
       }
       return queuedEdit(targetPath, ctx.cwd, signal, async (absolutePath, mutationTargetPath) => {
         const member = batchMemberFor(_toolCallId);
+        if (member) {
+          const base = await ensureBatchBase({ member, targetPath, mutationTargetPath, cwd: ctx.cwd, signal });
+          const basePreload = { normalized: base.content, fileHashes: base.hashes } as NormFile;
+          const built = buildInsertEdit(req, basePreload, ref, targetPath);
+          let hedit: HEdit;
+          const resWarnings: string[] = [];
+          try {
+            hedit = resEdit(built.editParams, resWarnings);
+          } catch (error) {
+            noteBatchFailure(member, error);
+            throw error;
+          }
+          return executeBatchMember({
+            kind: "insert",
+            member,
+            targetPath,
+            mutationTargetPath,
+            cwd: ctx.cwd,
+            signal,
+            hedit,
+            extraWarnings: [...anchorWarnings, ...insertWarnings, ...resWarnings],
+            skipBoundaryDedup: true,
+            strictBoundaryDedup: false,
+            foldedLines: built.anchorLine === undefined ? 0 : 1,
+          });
+        }
         const preload = await readNormFile(targetPath, ctx.cwd, {
           signal,
           accessMode: constants.R_OK | constants.W_OK,
           maxLines: MAX_HASH_LINES,
         });
         const { editParams, anchorLine } = buildInsertEdit(req, preload, ref, targetPath);
-        if (!member) {
-          const pipe = await execPipeline(targetPath, editParams, ctx.cwd, {
-            accessMode: constants.R_OK | constants.W_OK,
-            signal,
-            preloadedNorm: preload,
-            skipBoundaryDedup: true,
-          });
-          return commitEdit(pipe, {
-            path: pipe.path,
-            absolutePath,
-            mutationTargetPath,
-            signal,
-            verb: "inserted",
-            noopNoun: "Insertion",
-            foldedAnchorLines: anchorLine === undefined ? 0 : 1,
-            prefixWarnings: [...anchorWarnings, ...insertWarnings],
-            onApplied: () => clearBoundaryBypass(mutationTargetPath),
-          });
-        }
-        let hedit: HEdit;
-        const resWarnings: string[] = [];
-        try {
-          hedit = resEdit(editParams, resWarnings);
-        } catch (error) {
-          noteBatchFailure(member, error);
-          throw error;
-        }
-        return executeBatchMember({
-          kind: "insert",
-          member,
-          targetPath,
-          mutationTargetPath,
-          cwd: ctx.cwd,
+        const pipe = await execPipeline(targetPath, editParams, ctx.cwd, {
+          accessMode: constants.R_OK | constants.W_OK,
           signal,
-          hedit,
-          extraWarnings: [...anchorWarnings, ...insertWarnings, ...resWarnings],
+          preloadedNorm: preload,
           skipBoundaryDedup: true,
-          strictBoundaryDedup: false,
-          foldedLines: anchorLine === undefined ? 0 : 1,
+        });
+        return commitEdit(pipe, {
+          path: pipe.path,
+          absolutePath,
+          mutationTargetPath,
+          signal,
+          verb: "inserted",
+          noopNoun: "Insertion",
+          foldedAnchorLines: anchorLine === undefined ? 0 : 1,
+          prefixWarnings: [...anchorWarnings, ...insertWarnings],
+          onApplied: () => clearBoundaryBypass(mutationTargetPath),
         });
       });
     },

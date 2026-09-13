@@ -2,15 +2,16 @@ import type {
   ExtensionAPI,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { constants } from "fs";
-import { relative } from "path";
+import { constants } from "node:fs";
+import { relative } from "node:path";
 import {
   genDiff,
+  type DiffSpan,
   type LineEnding,
 } from "./replace-diff";
 import { readNormFile, type NormFile } from "./file-reader";
 import { editToolSchema, buildEditToolSchema, type ReqParams, assertReq, normReq } from "./payload-contract";
-import { decodeStringArray } from "./utils";
+import { splitLines } from "./utils";
 import { loadP, loadGuide } from "./prompts";
 import { type FileIdentity } from "./fs-write";
 import { applyEdit,
@@ -34,7 +35,7 @@ import { toCwd } from "./paths";
 import { noopPayloadKey, markBoundaryNoop, consumeBoundaryBypass, clearBoundaryBypass } from "./boundary-bypass";
 import { queuedEdit, editToolBase, editRenderCallWrapper, editRenderResultWrapper, resolveEditTargetWithRequirement, throwIfStrictInput, getBoundaryDedupMode, withReplacePrompts, DEFAULT_EDIT_FLAGS, type EditToolFlags } from "./edit-common";
 import { commitEdit } from "./commit";
-import { batchMemberFor, executeBatchMember, noteBatchFailure } from "./batch";
+import { batchMemberFor, executeBatchMember, noteBatchFailure, suffixPoisonCause } from "./batch";
 
 export { editToolSchema, type ReqParams, assertReq };
 
@@ -72,6 +73,7 @@ export interface PipelineResult {
   boundaryDedupAbove: string[];
   boundaryDedupBelow: string[];
   identity: FileIdentity;
+  spans?: DiffSpan[];
 }
 
 
@@ -116,17 +118,11 @@ function countLineChanges(
 
 export function buildReplaceHEdit(params: ReqParams): { edit: HEdit; warnings: string[] } {
   const editWarnings: string[] = [];
-  let replacementLines = params.replacement_lines;
-  const expandedReplacement = decodeStringArray(replacementLines);
-  if (expandedReplacement) {
-    editWarnings.push('[W_BAD_SHAPE] Unwrapped JSON array syntax from a replacement_lines element.');
-    replacementLines = expandedReplacement;
-  }
   const edit = resEdit(
     {
       remove_from: params.remove_from,
       remove_to: params.remove_to,
-      replacement_lines: replacementLines,
+      replacement_lines: params.replacement_lines,
     },
     editWarnings,
   );
@@ -187,6 +183,9 @@ export async function execPipeline(
   const sortedFixes = [...(anchorResult.autoFixes ?? [])].sort((a, b) => a.removedLineIndex - b.removedLineIndex);
   const aboveFixes = sortedFixes.filter((fix) => fix.kind === "leading" || fix.kind === "last-new-before");
   const belowFixes = sortedFixes.filter((fix) => fix.kind === "trailing" || fix.kind === "first-new-after");
+  const pipeSpan = isNoop ? undefined : hashSpan(originalHashes, edit.hash_bounds[0].hash, edit.hash_bounds[1].hash);
+  const pipeResultCount = splitLines(result).length;
+  const pipeSpans = pipeSpan ? [{ start: pipeSpan[0], end: pipeSpan[1], replacementCount: pipeResultCount - (originalHashes.length - (pipeSpan[1] - pipeSpan[0] + 1)) }] : undefined;
   return {
     path: displayPath,
     originalNormalized,
@@ -208,6 +207,7 @@ export async function execPipeline(
     boundaryDedupAbove: aboveFixes.map((fix) => fix.removedLine),
     boundaryDedupBelow: belowFixes.map((fix) => fix.removedLine),
     identity,
+    ...(pipeSpans ? { spans: pipeSpans } : {}),
   };
 }
 
@@ -218,7 +218,7 @@ export function previewFromPipe(pipe: PipelineResult): RPreview {
       path: pipe.path,
     };
   }
-  const base = genDiff(pipe.originalNormalized, pipe.result, 4, pipe.resultHashes, pipe.originalHashes);
+  const base = genDiff(pipe.originalNormalized, pipe.result, 4, pipe.resultHashes, pipe.originalHashes, undefined, pipe.spans);
   return { diff: withDedupRows(base.diff, base.lineNumbers, pipe.boundaryDedupAbove, pipe.boundaryDedupBelow).diff, path: pipe.path };
 }
 export function previewError(error: unknown): RPreview {
@@ -286,6 +286,7 @@ export function buildToolDef(flags: EditToolFlags = DEFAULT_EDIT_FLAGS): ToolDef
       }).catch((error: unknown) => {
         const member = batchMemberFor(_toolCallId);
         if (member) noteBatchFailure(member, error);
+        else suffixPoisonCause(_toolCallId, error);
         throw error;
       });
       return queuedEdit(targetPath, ctx.cwd, signal, async (absolutePath, mutationTargetPath) => {
@@ -296,31 +297,38 @@ export function buildToolDef(flags: EditToolFlags = DEFAULT_EDIT_FLAGS): ToolDef
         const strictBoundaryDedup = dedupMode === "strict" && !boundaryBypass;
         const member = batchMemberFor(_toolCallId);
         if (!member) {
-          const pipe = await execPipeline(
-            targetPath,
-            normalizedParams,
-            ctx.cwd,
-            { accessMode: constants.R_OK | constants.W_OK, signal, skipBoundaryDedup: boundaryBypass },
-          );
-          const appliedWarnings = boundaryBypass
-            ? ["[W_BOUNDARY_BYPASS] Boundary dedup was off for this call and is back on."]
-            : [];
-          return commitEdit(pipe, {
-            path: pipe.path,
-            absolutePath,
-            mutationTargetPath,
-            editAnchors: [normalizedParams.remove_from, normalizedParams.remove_to],
-            signal,
-            appliedWarnings,
-            onApplied: () => { if (dedupOn) clearBoundaryBypass(mutationTargetPath); },
-            onNoopDedup: dedupOn ? () => markBoundaryNoop(mutationTargetPath, noopPayload) : undefined,
-          });
+          try {
+            const pipe = await execPipeline(
+              targetPath,
+              normalizedParams,
+              ctx.cwd,
+              { accessMode: constants.R_OK | constants.W_OK, signal, skipBoundaryDedup: boundaryBypass },
+            );
+            const appliedWarnings = boundaryBypass
+              ? ["[W_BOUNDARY_BYPASS] Boundary dedup was off for this call and is back on."]
+              : [];
+            return await commitEdit(pipe, {
+              path: pipe.path,
+              absolutePath,
+              mutationTargetPath,
+              editAnchors: [normalizedParams.remove_from, normalizedParams.remove_to],
+              signal,
+              appliedWarnings,
+              onApplied: () => { if (dedupOn) clearBoundaryBypass(mutationTargetPath); },
+              onNoopDedup: dedupOn ? () => markBoundaryNoop(mutationTargetPath, noopPayload) : undefined,
+            });
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            if (boundaryBypass && !detail.includes("File was written;")) markBoundaryNoop(mutationTargetPath, noopPayload);
+            throw error;
+          }
         }
         let built: { edit: HEdit; warnings: string[] };
         try {
           built = buildReplaceHEdit(normalizedParams);
         } catch (error) {
           noteBatchFailure(member, error);
+          if (boundaryBypass) markBoundaryNoop(mutationTargetPath, noopPayload);
           throw error;
         }
         const appliedWarnings = boundaryBypass
@@ -338,6 +346,7 @@ export function buildToolDef(flags: EditToolFlags = DEFAULT_EDIT_FLAGS): ToolDef
           skipBoundaryDedup: boundaryBypass,
           strictBoundaryDedup,
           noopPayload,
+          bypassConsumed: boundaryBypass,
         });
       });
     },
