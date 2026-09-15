@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "actionFusion": true,
+  "observationPack": true,
+
+  "evidencePreservingReducer": true,
+  "evidencePreservingReducerProvider": "cpa",
+  "evidencePreservingReducerModel": "gpt-5.6-luna",
+
+  "onlineContextCompact": false,
+  "cacheWriteReadRatio": 40
+}

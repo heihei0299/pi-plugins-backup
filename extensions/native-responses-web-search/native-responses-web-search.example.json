@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "transport": "auto",
+  "channels": [
+    {
+      "provider": "cpa",
+      "endpoint": "standard",
+      "modelPrefix": "gpt-5.6-luna",
+      "enabled": true
+    },
+    {
+      "provider": "openai-codex",
+      "endpoint": "codex",
+      "transport": "websocket-cached",
+      "modelPrefix": "gpt-",
+      "enabled": false
+    }
+  ]
+}

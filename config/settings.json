@@ -1,0 +1,37 @@
+{
+  "compaction": {
+    "enabled": true
+  },
+  "defaultModel": "gpt-5.6-luna",
+  "defaultProvider": "cpa",
+  "defaultThinkingLevel": "max",
+  "hideThinkingBlock": true,
+  "lastChangelogVersion": "0.85.1",
+  "packages": [
+    "npm:@gotgenes/pi-permission-system",
+    "npm:@narumitw/pi-btw",
+    "npm:@tmustier/pi-raw-paste",
+    "npm:pi-cache-optimizer",
+    "npm:pi-rtk-optimizer",
+    "npm:awesome-pi-themes",
+    "npm:@smoose/pi-footer",
+    "git:https://github.com/NVlabs/SoL-Pi.git",
+    "npm:@sting8k/pi-vcc",
+    "git:github.com/DietrichGebert/ponytail"
+  ],
+  "theme": "alien-candy",
+  "transport": "websocket-cached",
+  "tuiMode": "regular",
+  "footer": {
+    "preset": "custom",
+    "segments": [
+      "git",
+      "model",
+      "context_pct",
+      "session",
+      "token_total",
+      "time_spent",
+      "extension_statuses"
+    ]
+  }
+}
