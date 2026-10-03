@@ -1,45 +1,29 @@
 # Pi plugins backup
 
-This repository is a small, restorable snapshot of the Pi setup currently used by this machine.
+保存当前机器的 Pi 配置和扩展快照，可用于同步或恢复。
 
-## Contents
+## 内容
 
-- `packages.json` — pinned npm package versions and Git commits.
-- `extensions/` — the three active local extensions:
-  - `pi-plan-mode`
-  - `pi-locked-subagents`
-  - `native-responses-web-search`
-- `config/` — non-secret Pi settings and extension configuration.
-- `legacy/` — extensions that are no longer part of the active setup.
+- `packages.json`：固定的 npm 版本与 Git commit。
+- `extensions/`：当前使用的本地扩展。
+- `config/`：非敏感设置。
+- `legacy/`：不再启用的旧扩展。
 
-Third-party `node_modules`, sessions, caches, credentials, model stores, and machine integration files are intentionally not tracked.
+依赖目录、会话、缓存、凭据、模型存储和机器集成文件不会纳入备份。
 
-## Sync from the current Pi setup
+## 同步与恢复
 
-```bash
+默认从 `~/.pi/agent` 同步：
+
+~~~sh
 pnpm sync
-```
-
-The source directory defaults to `~/.pi/agent`. Override it with:
-
-```bash
 PI_AGENT_DIR=/path/to/.pi/agent pnpm sync
-```
+~~~
 
-The sync copies only the files listed by the sync script and regenerates `packages.json` from `settings.json`, installed package manifests, and Git `HEAD` revisions.
+恢复到该目录：
 
-## Restore the setup
-
-```bash
+~~~sh
 pnpm restore
-```
+~~~
 
-This copies the tracked settings and local extensions to `~/.pi/agent`, installs the pinned packages with Pi, and installs the native web-search extension's runtime dependencies. Override the destination with `PI_AGENT_DIR`.
-
-Restore intentionally does not touch authentication, model credentials, sessions, caches, or other untracked machine state.
-
-## Current package source of truth
-
-The active package list is the `packages` array in `config/settings.json`; `packages.json` adds the installed npm versions and Git commit pins used by restore.
-
-The local extension source of truth is `extensions/`, not the old files in `legacy/`.
+恢复会安装固定版本的包和本地扩展，但不会覆盖认证信息、模型凭据、会话、缓存或其他未跟踪状态。活动包清单以 `config/settings.json` 为准；本地扩展源位于 `extensions/`。
