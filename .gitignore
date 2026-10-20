@@ -2,3 +2,13 @@ node_modules/
 *.local.json
 *.local.jsonc
 .DS_Store
+
+# === 提交内容治理：仅提交 README + 源码/恢复资料 ===
+# extensions/、legacy/、config/ 是恢复所需的实际 payload；其余文档与本机 agent 快照
+# 保留在磁盘，不纳入版本控制
+*.md
+!README*.md
+/.agents/
+/.opencode/
+/.pi/
+/AGENTS.md
