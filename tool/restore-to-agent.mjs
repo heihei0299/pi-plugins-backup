@@ -42,7 +42,7 @@ async function copyFile(relativeSource, relativeDestination) {
 
 for (const [name, files] of Object.entries(extensionFiles)) {
   for (const file of files) {
-    await copyFile(`extensions/${name}/${file}`, `extensions/${name}/${file}`);
+    await copyFile(`extension/${name}/${file}`, `extensions/${name}/${file}`);
   }
 }
 

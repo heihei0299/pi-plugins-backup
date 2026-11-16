@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "sync": "node scripts/sync-from-agent.mjs",
-    "restore": "node scripts/restore-to-agent.mjs"
+    "sync": "node tool/sync-from-agent.mjs",
+    "restore": "node tool/restore-to-agent.mjs"
   }
 }

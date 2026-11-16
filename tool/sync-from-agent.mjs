@@ -92,7 +92,7 @@ if (!Array.isArray(settings.packages) || settings.packages.some((source) => type
 
 for (const [name, files] of Object.entries(extensionFiles)) {
   for (const file of files) {
-    await copyFile(`extensions/${name}/${file}`, `extensions/${name}/${file}`);
+    await copyFile(`extensions/${name}/${file}`, `extension/${name}/${file}`);
   }
 }
 

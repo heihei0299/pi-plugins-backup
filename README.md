@@ -5,7 +5,7 @@
 ## 内容
 
 - `packages.json`：固定的 npm 版本与 Git commit。
-- `extensions/`：当前使用的本地扩展。
+- `extension/`：当前使用的本地扩展。
 - `config/`：非敏感设置。
 - `legacy/`：不再启用的旧扩展。
 
@@ -26,4 +26,4 @@ PI_AGENT_DIR=/path/to/.pi/agent pnpm sync
 pnpm restore
 ~~~
 
-恢复会安装固定版本的包和本地扩展，但不会覆盖认证信息、模型凭据、会话、缓存或其他未跟踪状态。活动包清单以 `config/settings.json` 为准；本地扩展源位于 `extensions/`。
+恢复会安装固定版本的包和本地扩展，但不会覆盖认证信息、模型凭据、会话、缓存或其他未跟踪状态。活动包清单以 `config/settings.json` 为准；本地扩展源位于 `extension/`。
